@@ -373,3 +373,86 @@ class BacktestReport:
             for t in self.trades
         ]).to_csv(path, index=False)
         log.info("Saved trade log to %s", path)
+
+
+# ── CLI entry point ───────────────────────────────────────────────────────────
+
+def run_cli() -> None:
+    """Command-line interface for running backtests."""
+    import argparse
+    from yukti.config import settings
+
+    parser = argparse.ArgumentParser(description="Yukti Backtest Engine")
+    parser.add_argument("--start", default="2024-01-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", default="2024-12-31", help="End date YYYY-MM-DD")
+    parser.add_argument("--sample-rate", type=float, default=0.3, help="Claude call sample rate (0.0-1.0)")
+    parser.add_argument("--symbols", nargs="*", default=None, help="Specific symbols (default: all in universe)")
+    args = parser.parse_args()
+
+    import asyncio
+    asyncio.run(_run_backtest(args.start, args.end, args.sample_rate, args.symbols))
+
+
+async def _run_backtest(start: str, end: str, sample_rate: float, symbols: list[str] | None = None) -> None:
+    """Run the backtest with optional symbol filter."""
+    from yukti.data.database import create_all_tables
+    from yukti.data.models import Candle
+    from sqlalchemy import select, and_, func as sa_func
+    import pandas as pd
+
+    await create_all_tables()
+
+    # Load universe or use provided symbols
+    if symbols:
+        universe = symbols
+    else:
+        from yukti.config import settings
+        try:
+            import redis.asyncio as aioredis
+            r = await aioredis.from_url(settings.redis_url, decode_responses=True)
+            raw = await r.get("yukti:universe")
+            await r.aclose()
+            if raw:
+                universe_list = json.loads(raw)
+                universe = [u["symbol"] for u in universe_list]
+            else:
+                universe = ["RELIANCE", "HDFCBANK", "INFY", "TCS", "ICICIBANK"]
+        except Exception:
+            universe = ["RELIANCE", "HDFCBANK", "INFY", "TCS", "ICICIBANK"]
+
+    # Load candles from DB
+    from yukti.data.database import get_db
+    candles: dict[str, pd.DataFrame] = {}
+    async with get_db() as db:
+        for symbol in universe:
+            rows = (await db.execute(
+                select(Candle)
+                .where(
+                    and_(
+                        Candle.symbol == symbol,
+                        sa_func.date(Candle.time) >= start,
+                        sa_func.date(Candle.time) <= end,
+                    )
+                )
+                .order_by(Candle.time)
+            )).scalars().all()
+            if rows:
+                df = pd.DataFrame(
+                    [(r.time, r.open, r.high, r.low, r.close, r.volume) for r in rows],
+                    columns=["time", "open", "high", "low", "close", "volume"],
+                ).set_index("time")
+                candles[symbol] = df.astype(float)
+
+    if not candles:
+        log.error("No candle data found for the date range. Populate the candles table first.")
+        return
+
+    nifty_df = candles.get("NIFTY", next(iter(candles.values())))
+    engine = BacktestEngine(
+        candles, nifty_df,
+        account_value=settings.account_value,
+        claude_sample_rate=sample_rate,
+    )
+    report = await engine.run()
+    report.print_summary()
+    report.to_csv("backtest_trades.csv")

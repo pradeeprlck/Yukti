@@ -69,7 +69,7 @@ secrets*.json
 doppler.json
 
 # IDE
-.env.example is OK to commit — use for template
+# .env.example is OK to commit — use for template
 
 # Temp
 .tmp/
