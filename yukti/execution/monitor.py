@@ -50,7 +50,10 @@ async def monitor_positions(poll_interval: int = 10) -> None:
                 candles = await dhan.get_candles(security_id, interval="1")
                 if not candles:
                     continue
-                last_close = float(candles[-1].get("close", 0))
+                last = candles[-1]
+                last_high  = float(last.get("high",  0))
+                last_low   = float(last.get("low",   0))
+                last_close = float(last.get("close", 0))
             except Exception as exc:
                 log.warning("Monitor: failed to fetch price for %s: %s", symbol, exc)
                 continue
@@ -60,19 +63,21 @@ async def monitor_positions(poll_interval: int = 10) -> None:
             target_1   = float(pos.get("target_1", 0))
 
             if is_long:
-                if last_close <= stop_loss:
-                    log.info("SL hit for %s @ ₹%.2f", symbol, last_close)
-                    await close_trade(symbol, last_close, "stop_loss_hit")
-                elif target_1 and last_close >= target_1:
-                    log.info("Target 1 hit for %s @ ₹%.2f", symbol, last_close)
-                    await close_trade(symbol, last_close, "target_1_hit")
+                # Use candle low for SL (wick can touch SL without closing below)
+                if last_low <= stop_loss:
+                    log.info("SL hit for %s @ ₹%.2f (low)", symbol, last_low)
+                    await close_trade(symbol, stop_loss, "stop_loss_hit")
+                elif target_1 and last_high >= target_1:
+                    log.info("Target 1 hit for %s @ ₹%.2f (high)", symbol, last_high)
+                    await close_trade(symbol, target_1, "target_1_hit")
             else:
-                if last_close >= stop_loss:
-                    log.info("SL hit (short) for %s @ ₹%.2f", symbol, last_close)
-                    await close_trade(symbol, last_close, "stop_loss_hit")
-                elif target_1 and last_close <= target_1:
-                    log.info("Target 1 hit (short) for %s @ ₹%.2f", symbol, last_close)
-                    await close_trade(symbol, last_close, "target_1_hit")
+                # Use candle high for SL (wick can touch SL without closing above)
+                if last_high >= stop_loss:
+                    log.info("SL hit (short) for %s @ ₹%.2f (high)", symbol, last_high)
+                    await close_trade(symbol, stop_loss, "stop_loss_hit")
+                elif target_1 and last_low <= target_1:
+                    log.info("Target 1 hit (short) for %s @ ₹%.2f (low)", symbol, last_low)
+                    await close_trade(symbol, target_1, "target_1_hit")
 
 
 # ═══════════════════════════════════════════════════════════════

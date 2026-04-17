@@ -87,7 +87,7 @@ class MarketScanService:
             await asyncio.sleep(max(5, self.interval_secs - elapsed))
 
     async def _get_nifty_context(self) -> tuple[float, str]:
-        """Get Nifty change and trend."""
+        """Get Nifty change and trend, and cache it in Redis for circuit-breaker gate."""
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
@@ -97,6 +97,10 @@ class MarketScanService:
             nifty_df = pd.DataFrame(nifty_raw, columns=["time", "open", "high", "low", "close", "volume"]).astype({"close": float})
             nifty_chg = float((nifty_df["close"].iloc[-1] - nifty_df["close"].iloc[-2]) / nifty_df["close"].iloc[-2] * 100)
             nifty_trend = "UP" if nifty_df["close"].iloc[-1] > nifty_df["close"].iloc[-10] else "DOWN"
+            # Cache for circuit-breaker gate (expires after 10 min)
+            from yukti.data.state import get_redis
+            r = await get_redis()
+            await r.set("yukti:market:nifty_chg_pct", str(nifty_chg), ex=600)
             return nifty_chg, nifty_trend
         except Exception as exc:
             log.warning("MarketScanService: Nifty fetch failed: %s", exc)

@@ -28,6 +28,9 @@ from yukti.config import settings
 
 log = logging.getLogger("yukti.main")
 
+# Module-level reference so graceful shutdown can reach the control plane
+_control_plane: "ControlPlaneService | None" = None
+
 
 def _configure_logging() -> None:
     logging.basicConfig(
@@ -88,11 +91,12 @@ async def _run_paper_or_live(mode: str) -> None:
         await scanner.run_single_scan()
     else:
         # Continuous scan for live/shadow
+        global _control_plane
         scan_task = asyncio.create_task(scanner.run_continuous_scan())
 
         # Control plane
-        control = ControlPlaneService(mode)
-        await control.start()
+        _control_plane = ControlPlaneService(mode)
+        await _control_plane.start()
 
         # Wait for scan to finish (it runs forever)
         await scan_task
@@ -179,6 +183,8 @@ def main() -> None:
             loop.run_until_complete(_run_paper_or_live(args.mode))
     except KeyboardInterrupt:
         log.info("Shutdown requested — stopping gracefully")
+        if _control_plane is not None:
+            loop.run_until_complete(_control_plane.stop())
     finally:
         loop.close()
 

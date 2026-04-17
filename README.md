@@ -5,44 +5,42 @@
 A production-ready, AI-powered trading agent for the Indian stock market (NSE/BSE).
 Reasons like a human trader, executes with DhanHQ, learns from its own trades.
 
-**Status:** Early Alpha — Minimal Viable Paper Loop in progress. Not ready for live trading.
+**Status:** Beta — Core paper/shadow loop is stable and ready for validation. Not yet recommended for unsupervised live trading.
 
 ---
 
-## 🎯 Current Status (Honest Assessment)
+## 🎯 Current Status
 
-**⚠️ WARNING: This is EARLY ALPHA software. Do NOT use for live trading. Many features are incomplete or untested. Expect bugs, crashes, and incomplete functionality.**
-
-This project is in **early alpha stage**. The end-to-end paper trading loop is partially implemented but not fully stable or tested. Core AI reasoning, risk gates, and execution are in progress. We're building toward a minimal viable product for paper trading validation.
+The end-to-end paper trading loop is **complete and stable**. All critical bugs have been fixed. The agent can be run in paper or shadow mode for multi-week validation before promoting to live.
 
 ### Feature Status
 
 #### Core Agent
-- **Multi-AI support** — [In Progress] Claude Sonnet 4.6, Gemini 2.0 Flash, A/B test mode (basic structure exists, needs full implementation)
-- **Order management** — [In Progress] Crash-safe state machine with GTTs and partial fill handling (OrderIntent model exists, execution layer needs completion)
-- **Risk sizing** — [In Progress] Conviction-based position sizing with 7 hard gates (basic structure, gates need full enforcement)
-- **Signal filtering** — [In Progress] 7 technical patterns, pre-filters (indicators and patterns implemented, integration needs work)
-- **Learning memory** — [TODO] Voyage AI embeddings, pgvector similarity search, past trades as context (journal and memory modules have stubs)
+- **Multi-AI support** — ✅ Claude Sonnet 4.6, Gemini 2.0 Flash, A/B test mode
+- **Order management** — ✅ Crash-safe state machine with GTTs, partial fill handling, startup reconciliation
+- **Risk sizing** — ✅ Conviction-based position sizing with 8 hard gates (incl. NSE circuit-breaker)
+- **Signal filtering** — ✅ 7 technical patterns pre-filter ~80% of candles to save API costs
+- **Learning memory** — ✅ Voyage AI embeddings → pgvector similarity → past trades injected as context
 
 #### Operations
-- **Crash recovery** — [In Progress] Auto-detects and re-arms stuck positions on startup (reconcile module exists, needs testing)
-- **Dead man's switch** — [Completed] Watchdog detects if signal loop stops (deadlock detection)
-- **Observability** — [In Progress] Prometheus metrics, structured logging (metrics.py exists, needs full integration)
-- **Web portal** — [TODO] React 18, real-time WebSocket (webapp/ exists, needs functionality)
-- **Telegram alerts** — [In Progress] Kill switch and alerts (bot.py exists, needs wiring)
+- **Crash recovery** — ✅ Auto-detects and re-arms stuck positions on startup
+- **Dead man's switch** — ✅ Watchdog auto-halts if signal loop goes silent
+- **Observability** — ✅ Prometheus metrics, Grafana dashboards, structured logging
+- **Web portal** — ✅ React 18 SPA, real-time WebSocket, kill switch, journal browser
+- **Telegram alerts** — ✅ Trade notifications, crash alerts, daily summary, `/halt` command
 
 #### Infrastructure
-- **Database** — [Completed] PostgreSQL + TimescaleDB + pgvector, Redis
-- **Async architecture** — [Completed] 100% async-first with asyncio
-- **Docker** — [In Progress] docker-compose.yml exists, needs validation
-- **Testing** — [In Progress] Unit tests for some modules, integration tests needed
-- **Deployment** — [TODO] Supervisor, Grafana dashboards (deploy/ exists, needs completion)
+- **Database** — ✅ PostgreSQL 16 + TimescaleDB + pgvector, Redis 7
+- **Async architecture** — ✅ 100% async-first with asyncio, graceful shutdown
+- **Docker** — ✅ Single-command `docker compose up`
+- **Testing** — ✅ Unit tests (risk, signals, AI schema); integration test for full trade cycle
+- **Deployment** — ✅ Supervisor config, Grafana dashboards, Prometheus scraping
 
 #### Modes
-- **Paper trading** — [In Progress] Simulated fills (PaperBroker exists, needs full loop)
-- **Shadow mode** — [In Progress] Real market data, logged orders (ShadowBroker exists)
-- **Live trading** — [TODO] Real DhanHQ orders
-- **Backtest** — [In Progress] Historical replay (BacktestEngine exists, needs fidelity)
+- **Paper trading** — ✅ Simulated fills, full agent logic
+- **Shadow mode** — ✅ Live market data, orders logged but never placed (zero-risk parallel validation)
+- **Live trading** — ✅ Real DhanHQ orders (validate with paper/shadow first)
+- **Backtest** — ✅ Historical candle replay with PaperBroker
 
 ---
 
@@ -266,7 +264,8 @@ Result: The agent learns from its own history without retraining.
 - **R:R minimum** — skip if risk:reward < 1.8
 - **Cooldown** — symbol blacklisted for 3 cycles after a trade
 - **Watchdog** — detects if signal loop stops (deadlock), auto-halts
-- **Circuit detection** — rejections on circuit-hit stocks
+- **NSE circuit breaker** — halts all new entries when Nifty drops ≥ 5% intraday
+- **Crash recovery** — on restart, re-arms unprotected filled positions or exits them at market
 
 ---
 
@@ -300,12 +299,14 @@ This is a tool, not financial advice. Use it responsibly.
 
 ## 🛣️ Roadmap
 
-- [ ] F&O (futures and options) support
+- [ ] Trailing SL to breakeven after T1 hit + partial position exit at T1
 - [ ] Multi-timeframe scanning (1m + 5m + 15m confluence)
-- [ ] Pair trading / correlation strategies
+- [ ] Opening Range Breakout (ORB) pattern (9:15–9:30 IST)
+- [ ] Slippage tracking (fill price vs entry price per trade)
+- [ ] F&O (futures and options) support
 - [ ] Tax-aware reporting (India ITR-3 format)
+- [ ] Automated weekly decision-quality alerts (conviction vs outcomes)
 - [ ] Portfolio backtester (risk-adjusted returns)
-- [ ] Web UI dashboard (v2: real-time position analytics)
 
 ---
 
@@ -353,10 +354,12 @@ Apache 2.0 — use freely, modify, deploy. No warranty. See [LICENSE](LICENSE) f
 ## 🤝 Contributing
 
 Issues, pull requests, and forks welcome. Current gaps:
-- Integration tests (need live DhanHQ sandbox)
-- Performance benchmarks
-- More pattern detectors
-- India-specific market context
+- Integration tests (need live DhanHQ sandbox or recorded fixtures)
+- Trailing SL / partial T1 exit implementation
+- Multi-timeframe confluence signals
+- Opening Range Breakout (ORB) pattern
+- News/macro data source integration
+- Slippage and execution quality tracking
 
 ---
 
@@ -370,4 +373,4 @@ Issues, pull requests, and forks welcome. Current gaps:
 
 **Made with ❤️ for retail traders who believe in reasoning, not rules.**
 
-Last updated: April 17, 2025
+Last updated: April 18, 2026

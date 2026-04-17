@@ -32,24 +32,32 @@ log = logging.getLogger(__name__)
 class ConnectionManager:
     def __init__(self) -> None:
         self._active: list[WebSocket] = []
+        self._lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
-        self._active.append(ws)
+        async with self._lock:
+            self._active.append(ws)
         log.info("WS client connected (total=%d)", len(self._active))
 
-    def disconnect(self, ws: WebSocket) -> None:
-        self._active.remove(ws)
+    async def disconnect(self, ws: WebSocket) -> None:
+        async with self._lock:
+            try:
+                self._active.remove(ws)
+            except ValueError:
+                pass
 
     async def broadcast(self, data: dict[str, Any]) -> None:
         dead: list[WebSocket] = []
-        for ws in self._active:
+        async with self._lock:
+            active_copy = list(self._active)
+        for ws in active_copy:
             try:
                 await ws.send_json(data)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            self._active.remove(ws)
+            await self.disconnect(ws)
 
 
 manager = ConnectionManager()
@@ -80,9 +88,14 @@ async def _push_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(_push_loop())
+    push_task = asyncio.create_task(_push_loop())
     log.info("Yukti API ready")
     yield
+    push_task.cancel()
+    try:
+        await push_task
+    except asyncio.CancelledError:
+        pass
     log.info("Yukti API shutdown")
 
 
@@ -152,7 +165,7 @@ def create_app() -> FastAPI:
                 elif msg.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
         except WebSocketDisconnect:
-            manager.disconnect(websocket)
+            await manager.disconnect(websocket)
             log.info("WS client disconnected (remaining=%d)", len(manager._active))
 
     # ── Serve React SPA ────────────────────────────────────────────────────────

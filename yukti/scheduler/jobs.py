@@ -127,6 +127,6 @@ def build_scheduler() -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="Asia/Kolkata")
     sched.add_job(job_morning_prep,  "cron", hour=9,  minute=0)
     sched.add_job(job_eod_squareoff, "cron", hour=15, minute=10)
-    sched.add_job(job_daily_journal, "cron", hour=16, minute=0)
+    sched.add_job(job_daily_reset,   "cron", hour=16, minute=0)
     sched.add_job(job_daily_report,  "cron", hour=16, minute=30)
     return sched

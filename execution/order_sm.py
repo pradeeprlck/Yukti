@@ -138,7 +138,6 @@ async def open_trade(
         "status":         "PLACED",
     }
     await save_position(symbol, pos)
-    await increment_trades_today()
 
     # ═══════════════════════════════════════════════════════════
     #  STEP 3 — Poll for fill
@@ -169,6 +168,7 @@ async def open_trade(
     pos["fill_price"] = fill_price
     pos["status"]     = "FILLED"
     await save_position(symbol, pos)
+    await increment_trades_today()
 
     # ═══════════════════════════════════════════════════════════
     #  STEP 4 — Arm SL + target GTTs

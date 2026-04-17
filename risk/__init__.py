@@ -228,4 +228,29 @@ async def run_gates(
         position.max_loss         = round(trim_qty * position.stop_distance, 2)
         position.capital_pct      = round(position.capital_deployed / acct * 100, 2)
 
+    # 8. NSE circuit breaker — abort if Nifty dropped ≥ 5% today
+    if await is_market_halted():
+        return GateResult(False, "market_halt: Nifty circuit breaker triggered")
+
     return GateResult(True)
+
+
+async def is_market_halted() -> bool:
+    """
+    Check NSE circuit-breaker conditions based on cached Nifty 50 change.
+    NSE halts trading at -5%, -10%, -20% intraday Nifty drops.
+    The scanner writes 'yukti:market:nifty_chg_pct' each cycle.
+    """
+    from yukti.data.state import get_redis
+    try:
+        r = await get_redis()
+        raw = await r.get("yukti:market:nifty_chg_pct")
+        if raw is None:
+            return False   # No data yet — don't block
+        nifty_chg = float(raw)
+        if nifty_chg <= -5.0:
+            log.warning("Circuit breaker: Nifty %.2f%% — halting entries", nifty_chg)
+            return True
+    except Exception as exc:
+        log.warning("is_market_halted check failed: %s", exc)
+    return False

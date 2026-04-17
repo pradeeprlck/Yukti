@@ -14,7 +14,7 @@ Key schema:
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -32,6 +32,7 @@ async def get_redis() -> aioredis.Redis:
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
+            health_check_interval=30,  # background PING every 30s; auto-reconnects
         )
     return _redis
 
@@ -71,12 +72,12 @@ async def delete_position(symbol: str) -> None:
 
 async def get_all_positions() -> dict[str, dict[str, Any]]:
     r = await get_redis()
-    keys = await r.keys("yukti:positions:*")
+    keys = [k async for k in r.scan_iter("yukti:positions:*")]
     if not keys:
         return {}
     values = await r.mget(*keys)
     return {
-        k.split(":")[-1]: json.loads(v)
+        k.decode().split(":")[-1] if isinstance(k, bytes) else k.split(":")[-1]: json.loads(v)
         for k, v in zip(keys, values)
         if v is not None
     }
@@ -84,8 +85,10 @@ async def get_all_positions() -> dict[str, dict[str, Any]]:
 
 async def count_open_positions() -> int:
     r = await get_redis()
-    keys = await r.keys("yukti:positions:*")
-    return len(keys)
+    count = 0
+    async for _ in r.scan_iter("yukti:positions:*"):
+        count += 1
+    return count
 
 
 # ── Cooldown registry ─────────────────────────────────────────────────────────
@@ -113,9 +116,15 @@ async def get_daily_pnl_pct() -> float:
 async def add_to_daily_pnl(pnl_pct: float) -> float:
     """Increment daily P&L and return new total."""
     r = await get_redis()
-    # INCRBYFLOAT stored as string; key expires at midnight (86400s)
+    # Expire at midnight IST (UTC+5:30) — not a rolling 24h window
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST)
+    midnight_ist = (now_ist + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    ttl = int((midnight_ist - now_ist).total_seconds())
     new_val = await r.incrbyfloat("yukti:pnl:daily", pnl_pct)
-    await r.expire("yukti:pnl:daily", 86_400)
+    await r.expire("yukti:pnl:daily", max(ttl, 60))
     return float(new_val)
 
 
@@ -168,6 +177,13 @@ async def get_performance_state() -> dict[str, Any]:
 
 async def increment_trades_today() -> int:
     r = await get_redis()
+    # Expire at midnight IST
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST)
+    midnight_ist = (now_ist + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    ttl = int((midnight_ist - now_ist).total_seconds())
     count = await r.incr("yukti:trades:today")
-    await r.expire("yukti:trades:today", 86_400)
+    await r.expire("yukti:trades:today", max(ttl, 60))
     return count
