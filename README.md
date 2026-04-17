@@ -21,6 +21,7 @@ The end-to-end paper trading loop is **complete and stable**. All critical bugs 
 - **Risk sizing** — ✅ Conviction-based position sizing with 8 hard gates (incl. NSE circuit-breaker)
 - **Signal filtering** — ✅ 7 technical patterns pre-filter ~80% of candles to save API costs
 - **Learning memory** — ✅ Voyage AI embeddings → pgvector similarity → past trades injected as context
+- **Macro context** — ✅ India VIX, FII/DII net flows, live market headlines injected per cycle
 
 #### Operations
 - **Crash recovery** — ✅ Auto-detects and re-arms stuck positions on startup
@@ -358,7 +359,6 @@ Issues, pull requests, and forks welcome. Current gaps:
 - Trailing SL / partial T1 exit implementation
 - Multi-timeframe confluence signals
 - Opening Range Breakout (ORB) pattern
-- News/macro data source integration
 - Slippage and execution quality tracking
 
 ---

@@ -9,6 +9,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict
 
+import pandas as pd
+
 from yukti.agents.arjun import arjun
 from yukti.agents.memory import retrieve_similar
 from yukti.data.state import is_halted, get_performance_state, get_daily_pnl_pct, count_open_positions
@@ -17,6 +19,7 @@ from yukti.execution.order_sm import open_trade
 from yukti.metrics import signals_scanned, record_skip, record_trade_opened
 from yukti.risk import calculate_levels, calculate_position, run_gates, Portfolio
 from yukti.scheduler.jobs import is_trading_day, is_trading_hours
+from yukti.services.macro_context_service import MacroContext, fetch_macro_context
 from yukti.signals.context import build_context
 from yukti.signals.indicators import compute
 from yukti.signals.patterns import best_pattern
@@ -38,14 +41,14 @@ class MarketScanService:
         """Run one complete scan cycle (for paper mode)."""
         log.info("MarketScanService: starting single scan cycle")
 
-        nifty_chg, nifty_trend = await self._get_nifty_context()
+        macro = await self._get_macro_context()
         perf = await get_performance_state()
 
         for symbol, security_id in self.universe.items():
             if await is_halted():
                 log.info("MarketScanService: halted, stopping scan")
                 break
-            await self._scan_symbol(symbol, security_id, nifty_chg, nifty_trend, perf)
+            await self._scan_symbol(symbol, security_id, macro, perf)
 
         log.info("MarketScanService: single scan cycle complete")
 
@@ -66,11 +69,11 @@ class MarketScanService:
                 continue
 
             try:
-                nifty_chg, nifty_trend = await self._get_nifty_context()
+                macro = await self._get_macro_context()
                 perf = await get_performance_state()
 
                 tasks = [
-                    self._scan_symbol(symbol, security_id, nifty_chg, nifty_trend, perf)
+                    self._scan_symbol(symbol, security_id, macro, perf)
                     for symbol, security_id in self.universe.items()
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -86,27 +89,27 @@ class MarketScanService:
             elapsed = asyncio.get_event_loop().time() - cycle_start
             await asyncio.sleep(max(5, self.interval_secs - elapsed))
 
-    async def _get_nifty_context(self) -> tuple[float, str]:
-        """Get Nifty change and trend, and cache it in Redis for circuit-breaker gate."""
+    async def _get_macro_context(self) -> MacroContext:
+        """Fetch Nifty data then assemble full MacroContext (VIX, FII/DII, headlines)."""
+        nifty_chg, nifty_trend = 0.0, "SIDEWAYS"
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
             nifty_raw = await dhan.get_candles("13", 5, start, today)
-            if not nifty_raw or len(nifty_raw) < 20:
-                return 0.0, "SIDEWAYS"
-            nifty_df = pd.DataFrame(nifty_raw, columns=["time", "open", "high", "low", "close", "volume"]).astype({"close": float})
-            nifty_chg = float((nifty_df["close"].iloc[-1] - nifty_df["close"].iloc[-2]) / nifty_df["close"].iloc[-2] * 100)
-            nifty_trend = "UP" if nifty_df["close"].iloc[-1] > nifty_df["close"].iloc[-10] else "DOWN"
-            # Cache for circuit-breaker gate (expires after 10 min)
-            from yukti.data.state import get_redis
-            r = await get_redis()
-            await r.set("yukti:market:nifty_chg_pct", str(nifty_chg), ex=600)
-            return nifty_chg, nifty_trend
+            if nifty_raw and len(nifty_raw) >= 20:
+                nifty_df = pd.DataFrame(nifty_raw, columns=["time", "open", "high", "low", "close", "volume"]).astype({"close": float})
+                nifty_chg = float((nifty_df["close"].iloc[-1] - nifty_df["close"].iloc[-2]) / nifty_df["close"].iloc[-2] * 100)
+                nifty_trend = "UP" if nifty_df["close"].iloc[-1] > nifty_df["close"].iloc[-10] else "DOWN"
+                # Cache Nifty change for circuit-breaker gate
+                from yukti.data.state import get_redis
+                r = await get_redis()
+                await r.set("yukti:market:nifty_chg_pct", str(nifty_chg), ex=600)
         except Exception as exc:
             log.warning("MarketScanService: Nifty fetch failed: %s", exc)
-            return 0.0, "SIDEWAYS"
 
-    async def _scan_symbol(self, symbol: str, security_id: str, nifty_chg: float, nifty_trend: str, perf: dict) -> None:
+        return await fetch_macro_context(nifty_chg, nifty_trend)
+
+    async def _scan_symbol(self, symbol: str, security_id: str, macro: MacroContext, perf: dict) -> None:
         """Scan one symbol."""
         async with self.sem:
             signals_scanned.inc()
@@ -125,9 +128,9 @@ class MarketScanService:
                 # Direction defaults to Nifty-aligned bias before Claude decides.
                 pattern = best_pattern(snap)
                 memory_setup = pattern.name if pattern else "unknown"
-                memory_dir   = "LONG" if nifty_trend == "UP" else "SHORT" if nifty_trend == "DOWN" else "LONG"
+                memory_dir   = "LONG" if macro.nifty_trend == "UP" else "SHORT" if macro.nifty_trend == "DOWN" else "LONG"
                 past_journal = await retrieve_similar(symbol, memory_setup, memory_dir)
-                context = build_context(symbol, snap, nifty_chg, nifty_trend, "No breaking news", perf, past_journal)
+                context = build_context(symbol, snap, macro, perf, past_journal)
 
                 decision = await arjun.safe_decide(context)
                 log.info("MarketScanService: AI decision for %s: %s (conviction %d)", symbol, decision.action, decision.conviction)

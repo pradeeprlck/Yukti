@@ -12,9 +12,7 @@ from yukti.signals.indicators import IndicatorSnapshot
 def build_context(
     symbol: str,
     snap: IndicatorSnapshot,
-    nifty_change_pct: float,
-    nifty_trend: str,
-    news_summary: str,
+    macro: "MacroContext",
     perf: dict,
     past_journal: str = "",
 ) -> str:
@@ -22,14 +20,15 @@ def build_context(
     Assembles the complete prompt context for Claude.
 
     Args:
-        symbol:           Stock symbol e.g. "RELIANCE"
-        snap:             IndicatorSnapshot from indicators.compute()
-        nifty_change_pct: Nifty50 % change today
-        nifty_trend:      "UP" | "DOWN" | "SIDEWAYS"
-        news_summary:     Latest macro/stock news as plain text
-        perf:             Performance state dict from state.get_performance_state()
-        past_journal:     Similar past trade journal (from memory.retrieve)
+        symbol:       Stock symbol e.g. "RELIANCE"
+        snap:         IndicatorSnapshot from indicators.compute()
+        macro:        MacroContext from services.macro_context_service.fetch_macro_context()
+        perf:         Performance state dict from state.get_performance_state()
+        past_journal: Similar past trade journal (from memory.retrieve)
     """
+    # TYPE_CHECKING-style import to keep circular imports safe at runtime
+    from yukti.services.macro_context_service import MacroContext  # noqa: F401
+
     vol_label = (
         "(HIGH — confirms move)" if snap.volume_ratio > 1.5
         else "(LOW — caution)"   if snap.volume_ratio < 0.7
@@ -54,10 +53,14 @@ def build_context(
 
     return f"""
 ╔══ MARKET CONTEXT ══════════════════════════════════════════════╗
-  Nifty50 change   : {nifty_change_pct:+.2f}%
-  Nifty trend      : {nifty_trend}
+  Nifty50 change   : {macro.nifty_chg_pct:+.2f}%
+  Nifty trend      : {macro.nifty_trend}
+  India VIX        : {macro.vix_label}
+  FII flows today  : {macro.fii_label}
+  DII flows today  : {macro.dii_label}
   Time (IST)       : {datetime.now().strftime("%H:%M")}
-  News / macro     : {news_summary}
+  Headlines        :
+{macro.headlines_text}
 ╚════════════════════════════════════════════════════════════════╝
 
 ╔══ YOUR PERFORMANCE STATE ══════════════════════════════════════╗
