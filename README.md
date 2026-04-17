@@ -11,7 +11,9 @@ Reasons like a human trader, executes with DhanHQ, learns from its own trades.
 
 ## 🎯 Current Status (Honest Assessment)
 
-This project is in **early alpha stage**. The README previously claimed v0.2 and readiness for paper trading, but many core modules are incomplete, contain stubs, or have TODOs. We're actively working to bridge the gap.
+**⚠️ WARNING: This is EARLY ALPHA software. Do NOT use for live trading. Many features are incomplete or untested. Expect bugs, crashes, and incomplete functionality.**
+
+This project is in **early alpha stage**. The end-to-end paper trading loop is partially implemented but not fully stable or tested. Core AI reasoning, risk gates, and execution are in progress. We're building toward a minimal viable product for paper trading validation.
 
 ### Feature Status
 
@@ -113,7 +115,7 @@ docker compose up -d redis postgres
 uv run python scripts/bootstrap.py
 uv run python scripts/universe_loader.py --sample
 
-# Run in paper mode (validation in progress)
+# Run in paper mode (work in progress — may have issues)
 uv run python -m yukti --mode paper
 ```
 

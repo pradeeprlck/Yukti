@@ -219,12 +219,31 @@ class MockProvider(BaseProvider):
     async def call(self, context: str) -> tuple[TradeDecision, CallMeta]:
         import time
         t0 = time.monotonic()
-        decision = TradeDecision(
-            action="SKIP",
-            reasoning="Mock provider: no API keys configured",
-            skip_reason="mock_no_keys",
-            conviction=1,
-        )
+        # For testing, return TRADE on even calls, SKIP on odd
+        self._call_count = getattr(self, '_call_count', 0) + 1
+        if self._call_count % 2 == 0:
+            decision = TradeDecision(
+                action="TRADE",
+                direction="LONG",
+                market_bias="BULLISH",
+                setup_type="test_trade",
+                reasoning="Mock provider: test trade for paper mode",
+                entry_price=1500.0,
+                entry_type="LIMIT",
+                stop_loss=1470.0,
+                target_1=1530.0,
+                target_2=1560.0,
+                conviction=7,
+                risk_reward=2.0,
+                holding_period="intraday",
+            )
+        else:
+            decision = TradeDecision(
+                action="SKIP",
+                reasoning="Mock provider: skip for testing",
+                skip_reason="mock_skip",
+                conviction=1,
+            )
         meta = CallMeta(
             provider="mock",
             model="none",

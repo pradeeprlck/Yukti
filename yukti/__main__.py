@@ -282,9 +282,9 @@ async def _scan_symbol(
             snap = compute(df)
 
             # Cheap pre-filter
-            if best_pattern(snap) is None:
-                record_skip("no_pattern")
-                return
+            # if best_pattern(snap) is None:
+            #     record_skip("no_pattern")
+            #     return
 
             past_journal = await retrieve_similar(symbol, "unknown", "LONG")
 
