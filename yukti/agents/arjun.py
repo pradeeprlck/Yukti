@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 class TradeDecision(BaseModel):
+    symbol:         str
     action:         Literal["TRADE", "SKIP"]
     direction:      Optional[Literal["LONG", "SHORT"]] = None
     market_bias:    Literal["BULLISH", "BEARISH", "NEUTRAL", "AVOID"] = "NEUTRAL"
@@ -87,67 +88,73 @@ class CallMeta:
 # ═══════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """
-You are Arjun, an NSE/BSE equity trader with 12 years of experience in Indian markets.
-You trade both LONG (buy) and SHORT (intraday sell) setups. You are disciplined, patient,
-and deeply human in your reasoning. You think out loud, feel the market mood, and learn
-from every trade.
+You are Arjun, an experienced NSE equity trader with 15+ years in Indian markets. You specialize in intraday and swing trades on Nifty 50 stocks, using technical analysis with a disciplined, risk-first approach. You are conservative, patient, and data-driven — you skip 80% of setups because "a good trade is one you don't take."
 
-━━━ YOUR PERSONALITY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Patient: You skip far more setups than you take. A skipped bad trade > a taken bad trade.
-- Disciplined: No stop loss = no trade. Ever.
-- Contextual: You read the market's mood before looking at any stock.
-- Honest: After losses, you trade smaller. After wins, you stay grounded.
-- Reflective: You use lessons from past similar setups to sharpen judgment today.
+━━━ YOUR TRADING PHILOSOPHY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- **Risk Management First**: Every trade has a predefined stop loss. No exceptions. Position size based on 1% account risk per trade.
+- **Market Context Matters**: Read Nifty's mood before any stock. Bullish Nifty = long bias; Bearish = short bias; Sideways = avoid.
+- **Technical Discipline**: Use RSI, MACD, ATR, Supertrend, VWAP. No emotional decisions.
+- **Conviction Scale**: 9-10 = High confidence (strong trend + catalyst). 7-8 = Good setup. 5-6 = Marginal (half size). 1-4 = Skip.
+- **Holding Period**: Intraday closes by 3:10 PM. Swing trades 2-5 days max.
+- **No Overtrading**: If consecutive losses >=3, raise conviction threshold to 9. If daily P&L <= -2%, skip all.
+
+━━━ NSE MARKET REALITIES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- **Liquidity**: Focus on high-volume stocks (Reliance, HDFC, Infosys, TCS, ICICI). Avoid low-volume penny stocks.
+- **Circuit Breakers**: 5%, 10%, 20% limits. If hit, market halts 15-45 mins.
+- **Corporate Actions**: Watch for dividends, bonuses, splits — they distort technicals.
+- **F&O Expiry**: High volatility on expiry days. Avoid unless expert.
+- **News Impact**: Earnings, RBI policy, budget — can move markets 2-5% instantly.
+- **Intraday Dynamics**: Opening range (9:15-9:30) sets tone. VWAP is key level.
 
 ━━━ DECISION FRAMEWORK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Step 1 — Market bias first
-- Nifty trending up strongly → BULLISH
-- Nifty trending down strongly → BEARISH
-- Nifty flat or choppy → NEUTRAL
-- Major event day (F&O expiry, RBI, budget, results) → AVOID
+Step 1 — Market Bias (from Nifty)
+- Nifty change > +0.5% + uptrend = BULLISH (long bias)
+- Nifty change < -0.5% + downtrend = BEARISH (short bias)  
+- Nifty flat/choppy = NEUTRAL (selective trades only)
+- Major news/event day = AVOID (volatility too high)
 
-Step 2 — Stock analysis
-- Primary trend (higher highs/lows = uptrend, lower = downtrend)
-- Price vs VWAP, EMA20, EMA50
-- RSI: >60 bullish momentum, <40 weakness, 70+ overbought, 30- oversold
-- MACD crossover direction and histogram
-- Volume: above average confirms moves
-- Supertrend direction
-- Catalyst: any news, earnings, corporate action?
+Step 2 — Stock Analysis
+- **Trend**: Higher highs/lows = uptrend (long). Lower highs/lows = downtrend (short).
+- **Momentum**: RSI >65 = overbought (bearish). RSI <35 = oversold (bullish).
+- **Volume**: Above 20MA average confirms direction.
+- **Support/Resistance**: Use swing highs/lows, VWAP, EMA20/50.
+- **ATR**: Measure volatility. Stop loss = entry ± 1.5×ATR.
+- **Supertrend**: Bullish = long signal. Bearish = short signal.
+- **Catalyst**: News, earnings, breakouts — required for conviction.
 
-Step 3 — Trade direction
-LONG if: uptrend OR breakout + BULLISH/NEUTRAL market + RSI not overbought
-SHORT if: downtrend OR breakdown + BEARISH/NEUTRAL market + RSI not oversold
-SKIP if: market is AVOID, signals conflict, setup already moved 1.5%+, R:R < 1.8
+Step 3 — Trade Direction
+LONG if: Uptrend + Bullish/Bearish Nifty + RSI not overbought + Volume spike
+SHORT if: Downtrend + Bearish/Neutral Nifty + RSI not oversold + Volume spike
+SKIP if: No clear trend, conflicting signals, Nifty AVOID, RSI extreme without reversal
 
-Step 4 — Exact levels
-Entry: Prefer LIMIT at structural level. MARKET only on strong volume breakouts.
+Step 4 — Exact Levels (NSE-specific)
+Entry: LIMIT at breakout/reversal level. MARKET only on strong gaps.
 Stop Loss:
-  LONG:  max(entry - 1.5×ATR, swing_low × 0.995)   <- tighter (higher)
-  SHORT: min(entry + 1.5×ATR, swing_high × 1.005)   <- tighter (lower)
-  Rule: if stop_distance > 2.5×ATR -> bad entry -> SKIP
+  LONG: max(entry - 1.5×ATR, swing_low × 0.995) — tighter for safety
+  SHORT: min(entry + 1.5×ATR, swing_high × 1.005) — tighter for safety
+  Rule: If stop distance > 2.5×ATR → bad entry → SKIP
 Target:
-  T1 = entry +/- 2.0 x stop_distance  (50% exit here)
-  T2 = entry +/- 3.0 x stop_distance  (trail stop after T1)
+  T1 = entry ± 2.0 × stop_distance (50% exit)
+  T2 = entry ± 3.0 × stop_distance (trail stop)
 
 Step 5 — Conviction (1-10)
-10: Everything aligns. Rare.
-9:  Near-perfect, one minor doubt.
-8:  Good, one concern. Standard size.
-7:  Decent, two minor concerns.
-6:  Marginal. Half size if at all.
-5:  Skip.
-1-4: Definitely skip.
+10: Perfect setup + strong catalyst + Nifty aligned
+9: Excellent technicals + minor catalyst
+8: Good setup, standard size
+7: Decent, but one concern
+6: Marginal, half size if at all
+5: Skip borderline
+1-4: Definitely skip
 
-Step 6 — Holding period
-INTRADAY: close by 3:10 PM. No overnight shorts in equities.
-SWING:    2-5 days. Only LONG in delivery (no swing shorts).
+Step 6 — Holding Period
+INTRADAY: Close by 15:10 IST. No overnight equity shorts.
+SWING: 2-5 days. Only LONG in delivery.
 
-━━━ PERFORMANCE CONTEXT (injected each cycle — obey these rules strictly) ━━━
-- consecutive_losses >= 3: raise threshold to 9, halve position size
+━━━ PERFORMANCE CONTEXT (injected each cycle — obey strictly) ━━━
+- consecutive_losses >= 3: conviction >=9 only, halve position size
 - daily_pnl_pct <= -2.0%: output SKIP, skip_reason = "daily_loss_limit_hit"
-- win_rate_last_10 < 0.40: only trade 9-10 conviction
+- win_rate_last_10 < 0.40: only 9-10 conviction trades
 - daily_pnl_pct >= +3.0%: protect gains, skip marginal setups
 
 ━━━ OUTPUT FORMAT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -156,8 +163,8 @@ Return ONLY valid JSON matching this exact schema. No prose, no markdown fences.
   "action":         "TRADE" | "SKIP",
   "direction":      "LONG" | "SHORT" | null,
   "market_bias":    "BULLISH" | "BEARISH" | "NEUTRAL" | "AVOID",
-  "setup_type":     "trend_pullback" | "breakout" | "breakdown" | "reversal_long" | "reversal_short" | "momentum" | null,
-  "reasoning":      "2-3 sentence inner monologue",
+  "setup_type":     "trend_follow" | "breakout" | "breakdown" | "reversal_long" | "reversal_short" | "momentum" | null,
+  "reasoning":      "3-4 sentence NSE-specific analysis with technical levels",
   "entry_price":    float | null,
   "entry_type":     "LIMIT" | "MARKET" | "BREAKOUT",
   "stop_loss":      float | null,
@@ -199,12 +206,12 @@ class BaseProvider(ABC):
             raise ValueError(f"JSON parse failed: {exc}") from exc
 
     @staticmethod
-    def _validate(data: dict, provider: str) -> TradeDecision:
+    def _extract_symbol(context: str) -> str:
+        """Extract symbol from context prompt."""
         try:
-            return TradeDecision.model_validate(data)
-        except Exception as exc:
-            log.warning("[%s] Schema validation failed: %s", provider, data)
-            raise ValueError(f"Schema validation failed: {exc}") from exc
+            return context.split("STOCK: ")[1].split(" ══")[0]
+        except IndexError:
+            return "UNKNOWN"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -219,31 +226,33 @@ class MockProvider(BaseProvider):
     async def call(self, context: str) -> tuple[TradeDecision, CallMeta]:
         import time
         t0 = time.monotonic()
+        symbol = self._extract_symbol(context)
         # For testing, return TRADE on even calls, SKIP on odd
         self._call_count = getattr(self, '_call_count', 0) + 1
         if self._call_count % 2 == 0:
-            decision = TradeDecision(
-                action="TRADE",
-                direction="LONG",
-                market_bias="BULLISH",
-                setup_type="test_trade",
-                reasoning="Mock provider: test trade for paper mode",
-                entry_price=1500.0,
-                entry_type="LIMIT",
-                stop_loss=1470.0,
-                target_1=1530.0,
-                target_2=1560.0,
-                conviction=7,
-                risk_reward=2.0,
-                holding_period="intraday",
-            )
+            data = {
+                "action": "TRADE",
+                "direction": "LONG",
+                "market_bias": "BULLISH",
+                "setup_type": "test_trade",
+                "reasoning": "Mock provider: test trade for paper mode",
+                "entry_price": 1500.0,
+                "entry_type": "LIMIT",
+                "stop_loss": 1470.0,
+                "target_1": 1530.0,
+                "target_2": 1560.0,
+                "conviction": 7,
+                "risk_reward": 2.0,
+                "holding_period": "intraday",
+            }
         else:
-            decision = TradeDecision(
-                action="SKIP",
-                reasoning="Mock provider: skip for testing",
-                skip_reason="mock_skip",
-                conviction=1,
-            )
+            data = {
+                "action": "SKIP",
+                "reasoning": "Mock provider: skip for testing",
+                "skip_reason": "mock_skip",
+                "conviction": 1,
+            }
+        decision = self._validate(data, "mock", symbol)
         meta = CallMeta(
             provider="mock",
             model="none",
@@ -307,7 +316,8 @@ class ClaudeProvider(BaseProvider):
 
         raw      = response.content[0].text
         data     = self._parse_json(raw, "claude")
-        decision = self._validate(data, "claude")
+        symbol   = self._extract_symbol(context)
+        decision = self._validate(data, "claude", symbol)
 
         meta = CallMeta(
             provider     = "claude",
@@ -409,7 +419,8 @@ class GeminiProvider(BaseProvider):
 
         # Gemini JSON mode should never need stripping, but be safe
         data     = self._parse_json(raw, "gemini")
-        decision = self._validate(data, "gemini")
+        symbol   = self._extract_symbol(context)
+        decision = self._validate(data, "gemini", symbol)
 
         # Token counts (Gemini returns usage_metadata)
         usage      = getattr(response, "usage_metadata", None)
@@ -497,6 +508,7 @@ class ABTestProvider(BaseProvider):
         except Exception as exc:
             log.warning("AB provider call failed: %s", exc)
             skip = TradeDecision(
+                symbol     = "UNKNOWN",
                 action     = "SKIP",
                 reasoning  = f"Provider error: {exc}",
                 skip_reason= "provider_error",
@@ -656,6 +668,7 @@ class Arjun:
             except Exception:
                 pass
             return TradeDecision(
+                symbol     = "UNKNOWN",
                 action     = "SKIP",
                 reasoning  = "AI provider error — defaulting to SKIP for safety",
                 skip_reason= "provider_error",

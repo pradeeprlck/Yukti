@@ -154,15 +154,17 @@ async def _single_scan_cycle(universe: dict[str, str]) -> None:
     """
     Run a single scan cycle for paper mode testing.
     """
-    from yukti.data.state import is_halted, get_performance_state
+    from yukti.data.state import is_halted, get_performance_state, get_daily_pnl_pct, count_open_positions
     from yukti.execution.dhan_client import dhan
     from yukti.signals.context import build_context
     from yukti.signals.indicators import compute
     from yukti.agents.arjun import arjun
-    from yukti.risk import calculate_levels, calculate_position, run_gates
+    from yukti.risk import calculate_levels, calculate_position, run_gates, Portfolio
     from yukti.execution.order_sm import open_trade
     from yukti.metrics import record_skip, record_trade_opened
     from yukti.telegram.bot import alert_trade_opened
+
+    import pandas as pd
 
     log.info("Starting single scan cycle for paper mode")
 
@@ -240,6 +242,19 @@ async def _single_scan_cycle(universe: dict[str, str]) -> None:
                 decision.target_2 = decision.target_2 or levels.target_2
                 decision.risk_reward = decision.risk_reward or levels.risk_reward
                 log.debug(f"Fallback levels calculated for {symbol}")
+
+            # Run risk gates
+            portfolio = Portfolio(
+                account_value=settings.account_value,
+                open_positions=await count_open_positions(),
+                daily_pnl_pct=await get_daily_pnl_pct(),
+                total_exposure_pct=0.0,  # TODO: calculate total exposure
+            )
+            gate = await run_gates(decision, portfolio)
+            if not gate.passed:
+                record_skip(gate.reason or "gate_blocked")
+                log.info(f"Risk gate failed for {symbol}: {gate.reason}")
+                continue
 
             position = calculate_position(
                 decision.entry_price or snap.close,
@@ -406,10 +421,11 @@ async def _scan_symbol(
     """Scan one symbol — runs concurrently under semaphore."""
     from yukti.agents.arjun import arjun
     from yukti.agents.memory import retrieve_similar
+    from yukti.data.state import get_daily_pnl_pct, count_open_positions
     from yukti.execution.dhan_client import dhan
     from yukti.execution.order_sm import open_trade
     from yukti.metrics import signals_scanned, record_skip, record_trade_opened
-    from yukti.risk import calculate_levels, calculate_position, run_gates
+    from yukti.risk import calculate_levels, calculate_position, run_gates, Portfolio
     from yukti.signals.context import build_context
     from yukti.signals.indicators import compute
     from yukti.signals.patterns import best_pattern
@@ -474,10 +490,14 @@ async def _scan_symbol(
             )
             log.debug(f"Position calculated for {symbol}: qty {position.quantity}")
 
-            gate = await run_gates(
-                symbol, decision.direction or "LONG",
-                decision.risk_reward or 0.0, position,
+            # Run risk gates
+            portfolio = Portfolio(
+                account_value=settings.account_value,
+                open_positions=await count_open_positions(),
+                daily_pnl_pct=await get_daily_pnl_pct(),
+                total_exposure_pct=0.0,  # TODO: calculate total exposure
             )
+            gate = await run_gates(decision, portfolio)
             if not gate.passed:
                 record_skip(gate.reason or "gate_blocked")
                 log.info(f"Risk gate failed for {symbol}: {gate.reason}")

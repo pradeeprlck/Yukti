@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     min_rr: float = Field(default=1.8, gt=0)
     min_conviction: int = Field(default=5, ge=1, le=10)
     max_loss_cap_pct: float = Field(default=0.015, gt=0)
+    max_per_trade_risk_pct: float = Field(default=0.05, gt=0, le=0.1)
     atr_multiplier: float = Field(default=1.5, gt=0)
     max_atr_multiplier: float = Field(default=2.5, gt=0)
 

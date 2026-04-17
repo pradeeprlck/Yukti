@@ -8,13 +8,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from yukti.config import settings
-from yukti.data.state import (
-    count_open_positions,
-    get_daily_pnl_pct,
-    get_performance_state,
-    is_on_cooldown,
-)
+from yukti.agents.arjun import TradeDecision
 
 log = logging.getLogger(__name__)
 
@@ -169,65 +163,66 @@ def calculate_levels(
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass
+class Portfolio:
+    account_value: float
+    open_positions: int
+    daily_pnl_pct: float
+    total_exposure_pct: float  # sum of capital_pct across positions
+
+
+@dataclass
 class GateResult:
     passed:  bool
     reason:  str | None = None
 
 
 async def run_gates(
-    symbol:    str,
-    direction: str,
-    rr:        float,
-    position:  PositionResult,
-    account_value: float | None = None,
+    trade_decision: TradeDecision,
+    portfolio: Portfolio,
 ) -> GateResult:
     """
-    Run all pre-trade risk checks in order. Return first failure.
+    Run all 7 pre-trade risk checks in order. Return first failure.
     All checks are async because they may read Redis.
     """
-    acct = account_value or settings.account_value
+    # 1. Daily loss limit not breached
+    if portfolio.daily_pnl_pct <= -settings.daily_loss_limit_pct:
+        return GateResult(False, f"daily_loss_limit: {portfolio.daily_pnl_pct:.2%} <= -{settings.daily_loss_limit_pct:.2%}")
 
-    # 1. Daily loss limit
-    daily_pnl = await get_daily_pnl_pct()
-    if daily_pnl <= -settings.daily_loss_limit_pct:
-        return GateResult(False, f"daily_loss_limit: {daily_pnl:.2%} <= -{settings.daily_loss_limit_pct:.2%}")
+    # 2. Max open positions / exposure not exceeded
+    if portfolio.open_positions >= settings.max_open_positions:
+        return GateResult(False, f"max_positions: {portfolio.open_positions} >= {settings.max_open_positions}")
 
-    # 2. Max open positions
-    open_count = await count_open_positions()
-    if open_count >= settings.max_open_positions:
-        return GateResult(False, f"max_positions: {open_count} >= {settings.max_open_positions}")
+    # 3. Conviction score >= minimum threshold
+    if trade_decision.conviction < settings.min_conviction:
+        return GateResult(False, f"conviction_too_low: {trade_decision.conviction} < {settings.min_conviction}")
 
-    # 3. Symbol cooldown
-    if await is_on_cooldown(symbol):
-        return GateResult(False, f"cooldown: {symbol} recently traded")
+    # 4. Reward:Risk ratio >= minimum
+    if trade_decision.risk_reward and trade_decision.risk_reward < settings.min_rr:
+        return GateResult(False, f"rr_too_low: {trade_decision.risk_reward:.2f} < {settings.min_rr}")
 
-    # 4. R:R minimum
-    if rr < settings.min_rr:
-        return GateResult(False, f"rr_too_low: {rr:.2f} < {settings.min_rr}")
+    # 5. Cooldown period passed for the symbol
+    if await is_on_cooldown(trade_decision.symbol):
+        return GateResult(False, f"cooldown: {trade_decision.symbol} recently traded")
 
-    # 5. Zero quantity (conviction too low)
-    if position.quantity <= 0:
-        return GateResult(False, "zero_quantity: conviction too low or stop too tight")
+    # 6. Position size fits within per-trade risk %
+    position = calculate_position(
+        trade_decision.entry_price,
+        trade_decision.stop_loss,
+        trade_decision.direction,
+        trade_decision.conviction,
+        portfolio.account_value,
+    )
+    if position.capital_pct > settings.max_per_trade_risk_pct:
+        return GateResult(False, f"position_size_too_large: {position.capital_pct:.2f}% > {settings.max_per_trade_risk_pct:.2f}%")
 
-    # 6. Max loss per trade hard cap
-    loss_cap = acct * settings.max_loss_cap_pct
-    if position.max_loss > loss_cap:
-        return GateResult(False, f"max_loss_cap: ₹{position.max_loss:.0f} > ₹{loss_cap:.0f}")
-
-    # 7. Max single-stock concentration
-    max_cap = acct * settings.max_single_stock_pct
-    if position.capital_deployed > max_cap:
-        # Trim quantity instead of rejecting
-        trim_qty = int(max_cap / (position.capital_deployed / position.quantity))
-        if trim_qty <= 0:
-            return GateResult(False, f"concentration_trim_zero_qty: max_cap={max_cap}, deployed={position.capital_deployed}")
-        log.warning(
-            "Trimming %s qty %d→%d due to concentration limit",
-            symbol, position.quantity, trim_qty
-        )
-        position.quantity         = trim_qty
-        position.capital_deployed = round(trim_qty * (position.capital_deployed / position.quantity), 2)
-        position.max_loss         = round(trim_qty * position.stop_distance, 2)
-        position.capital_pct      = round(position.capital_deployed / acct * 100, 2)
+    # 7. No market halt / circuit breaker conditions
+    if await is_market_halted():
+        return GateResult(False, "market_halt: market is halted")
 
     return GateResult(True)
+
+
+async def is_market_halted() -> bool:
+    """Check if market is halted. Mock for now."""
+    # TODO: Implement real market halt check
+    return False
