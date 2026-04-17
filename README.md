@@ -53,7 +53,7 @@ Most retail trading bots are:
 
 Yukti flips this:
 - **Reasoning engine** — Claude or Gemini *thinks* about each setup, writes a conviction score, explains the trade
-- **Risk first** — deterministic 7-gate risk filter after every AI decision
+- **Risk first** — deterministic 8-gate risk filter after every AI decision
 - **Learning loop** — journals every closed trade, embeds it in vector memory, injects lessons into future decisions
 - **Crash-safe** — recovers from process crashes without losing state or exposing positions
 - **Multi-provider** — switches between Claude (best reasoning) and Gemini (free tier) — even A/B tests both in parallel
@@ -71,7 +71,7 @@ Signals (indicators + patterns)
     ↓ [pre-filter: skip 80% of candles]
 AI Brain (Claude or Gemini)
     ↓ [TradeDecision JSON]
-Risk Gates (7 deterministic checks)
+Risk Gates (8 deterministic checks)
     ↓
 Execution (DhanHQ orders → GTTs)
     ↓
@@ -80,7 +80,7 @@ Learning Loop (journal + vector embeddings)
 Web Portal (React 18, real-time WebSocket)
 ```
 
-**48 Python files, 6,000+ lines, 100% async-first.**
+**100% async-first. Paper → Shadow → Live progression baked in.**
 
 ---
 
@@ -117,7 +117,7 @@ uv run python scripts/universe_loader.py --sample
 uv run python -m yukti --mode paper
 ```
 
-**Web portal:** http://localhost:8000 (live stats, positions, trades, journal, kill switch) — [TODO]
+**Web portal:** http://localhost:8000 (live stats, positions, trades, journal, kill switch)
 
 ---
 
@@ -125,8 +125,8 @@ uv run python -m yukti --mode paper
 
 ### Core agent
 - **Multi-AI support** — Claude Sonnet 4.6, Gemini 2.0 Flash, A/B test mode
-- **Order management** — crash-safe state machine with GTT GTTs and partial fill handling
-- **Risk sizing** — conviction-based position sizing with 7 hard gates
+- **Order management** — crash-safe state machine with GTTs and partial fill handling
+- **Risk sizing** — conviction-based position sizing with 8 hard gates (incl. NSE circuit-breaker)
 - **Signal filtering** — 7 technical patterns, pre-filters 80% of candles to save API costs
 - **Learning memory** — Voyage AI embeddings, pgvector similarity search, past trades as context
 
@@ -138,7 +138,7 @@ uv run python -m yukti --mode paper
 
 ### Observability
 - **Web portal** — React SPA with real-time WebSocket, P&L chart, position cards, journal browser, kill switch
-- **Prometheus + Grafana** — 14 metrics, latency histograms, cost tracking, signal skip breakdown
+- **Prometheus + Grafana** — 16 metrics, latency histograms, cost tracking, signal skip breakdown
 - **Telegram alerts** — trade notifications, crash alerts, daily summary, emergency `/halt` command
 - **Decision quality report** — validates that conviction scores predict outcomes
 

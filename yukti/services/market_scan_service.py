@@ -121,7 +121,12 @@ class MarketScanService:
                 df = pd.DataFrame(raw, columns=["time","open","high","low","close","volume"]).astype({c: float for c in ["open","high","low","close","volume"]})
                 snap = compute(df)
 
-                past_journal = await retrieve_similar(symbol, "unknown", "LONG")
+                # Use the best detected pattern as the setup hint for memory retrieval.
+                # Direction defaults to Nifty-aligned bias before Claude decides.
+                pattern = best_pattern(snap)
+                memory_setup = pattern.name if pattern else "unknown"
+                memory_dir   = "LONG" if nifty_trend == "UP" else "SHORT" if nifty_trend == "DOWN" else "LONG"
+                past_journal = await retrieve_similar(symbol, memory_setup, memory_dir)
                 context = build_context(symbol, snap, nifty_chg, nifty_trend, "No breaking news", perf, past_journal)
 
                 decision = await arjun.safe_decide(context)
@@ -154,6 +159,11 @@ class MarketScanService:
                 pos = await open_trade(symbol, security_id, decision, position)
                 if pos:
                     record_trade_opened(decision.direction or "LONG", decision.setup_type or "unknown")
+                    try:
+                        from yukti.telegram.bot import alert_trade_opened
+                        await alert_trade_opened(pos)
+                    except Exception as tg_exc:
+                        log.warning("Telegram trade alert failed: %s", tg_exc)
 
             except Exception as exc:
                 log.error("MarketScanService: scan error %s: %s", symbol, exc)
