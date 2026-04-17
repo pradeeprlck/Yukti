@@ -112,7 +112,11 @@ docker compose up -d redis postgres
 
 # Bootstrap database
 uv run python scripts/bootstrap.py
-uv run python scripts/universe_loader.py --sample
+
+# Load trading universe (fetches Nifty50 symbols + DhanHQ security IDs dynamically)
+uv run python scripts/universe_loader.py --dynamic
+# Or use a specific index:
+# uv run python scripts/universe_loader.py --dynamic --index "NIFTY 100"
 
 # Run in paper mode (work in progress — expect partial functionality)
 uv run python -m yukti --mode paper

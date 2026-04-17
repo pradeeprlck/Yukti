@@ -19,7 +19,7 @@ from yukti.execution.order_sm import open_trade
 from yukti.metrics import signals_scanned, record_skip, record_trade_opened
 from yukti.risk import calculate_levels, calculate_position, run_gates, Portfolio
 from yukti.scheduler.jobs import is_trading_day, is_trading_hours
-from yukti.services.macro_context_service import MacroContext, fetch_macro_context
+from yukti.services.macro_context_service import MacroContext, fetch_macro_context, filter_headlines_for_symbol
 from yukti.signals.context import build_context
 from yukti.signals.indicators import compute
 from yukti.signals.patterns import best_pattern
@@ -130,7 +130,8 @@ class MarketScanService:
                 memory_setup = pattern.name if pattern else "unknown"
                 memory_dir   = "LONG" if macro.nifty_trend == "UP" else "SHORT" if macro.nifty_trend == "DOWN" else "LONG"
                 past_journal = await retrieve_similar(symbol, memory_setup, memory_dir)
-                context = build_context(symbol, snap, macro, perf, past_journal)
+                symbol_headlines = filter_headlines_for_symbol(symbol, macro.headlines)
+                context = build_context(symbol, snap, macro, perf, past_journal, symbol_headlines)
 
                 decision = await arjun.safe_decide(context)
                 log.info("MarketScanService: AI decision for %s: %s (conviction %d)", symbol, decision.action, decision.conviction)

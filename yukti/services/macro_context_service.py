@@ -88,6 +88,86 @@ class MacroContext:
         return "\n".join(f"    • {h}" for h in self.headlines[:3])
 
 
+# ── Sector keyword map ────────────────────────────────────────────────────────
+# Maps NSE symbol prefixes / exact names to sector search terms.
+# Checked case-insensitively against headline text.
+_SECTOR_KEYWORDS: dict[str, list[str]] = {
+    # Banking & Finance
+    "HDFCBANK":   ["HDFC Bank", "HDFC", "banking", "RBI", "interest rate", "NPA"],
+    "ICICIBANK":  ["ICICI Bank", "ICICI", "banking", "RBI", "interest rate", "NPA"],
+    "SBIN":       ["SBI", "State Bank", "banking", "RBI", "PSU bank"],
+    "AXISBANK":   ["Axis Bank", "banking", "RBI"],
+    "KOTAKBANK":  ["Kotak", "banking", "RBI"],
+    "BAJFINANCE": ["Bajaj Finance", "NBFC", "consumer finance"],
+    # IT
+    "TCS":        ["TCS", "Tata Consultancy", "IT sector", "tech", "software"],
+    "INFY":       ["Infosys", "INFY", "IT sector", "tech", "software"],
+    "WIPRO":      ["Wipro", "IT sector", "tech"],
+    "HCLTECH":    ["HCL Tech", "HCL", "IT sector", "tech"],
+    "TECHM":      ["Tech Mahindra", "IT sector", "telecom tech"],
+    # Oil & Energy
+    "RELIANCE":   ["Reliance", "RIL", "petrochemical", "oil", "Jio", "energy"],
+    "ONGC":       ["ONGC", "oil", "crude", "energy", "PSU"],
+    "BPCL":       ["BPCL", "Bharat Petroleum", "oil", "crude", "refinery"],
+    "IOC":        ["Indian Oil", "IOC", "oil", "refinery", "crude"],
+    # Auto
+    "TATAMOTORS": ["Tata Motors", "auto", "EV", "JLR", "automobile"],
+    "MARUTI":     ["Maruti", "Suzuki", "auto", "automobile", "passenger vehicle"],
+    "M&M":        ["Mahindra", "M&M", "auto", "EV", "tractor", "SUV"],
+    "BAJAJ-AUTO": ["Bajaj Auto", "two-wheeler", "motorcycle", "auto"],
+    "HEROMOTOCO": ["Hero Moto", "two-wheeler", "motorcycle", "auto"],
+    # Metals & Mining
+    "TATASTEEL":  ["Tata Steel", "steel", "metal", "iron ore"],
+    "JSWSTEEL":   ["JSW Steel", "steel", "metal"],
+    "HINDALCO":   ["Hindalco", "aluminium", "metal", "Novelis"],
+    "VEDL":       ["Vedanta", "zinc", "copper", "metal", "mining"],
+    # Pharma
+    "SUNPHARMA":  ["Sun Pharma", "pharma", "pharmaceutical", "drug"],
+    "DRREDDY":    ["Dr Reddy", "pharma", "pharmaceutical", "generic"],
+    "CIPLA":      ["Cipla", "pharma", "pharmaceutical", "drug"],
+    # FMCG
+    "HINDUNILVR": ["HUL", "Hindustan Unilever", "FMCG", "consumer goods"],
+    "ITC":        ["ITC", "FMCG", "cigarette", "tobacco", "hotel"],
+    "NESTLEIND":  ["Nestle", "FMCG", "food"],
+    # Infra / Cement
+    "ULTRACEMCO": ["UltraTech", "cement", "infrastructure"],
+    "SHREECEM":   ["Shree Cement", "cement"],
+    "ADANIPORTS": ["Adani Ports", "Adani", "port", "logistics"],
+    "ADANIENT":   ["Adani", "energy", "power"],
+    "POWERGRID":  ["Power Grid", "power", "electricity", "transmission"],
+    "NTPC":       ["NTPC", "power", "electricity", "PSU"],
+}
+
+
+def filter_headlines_for_symbol(symbol: str, headlines: list[str]) -> list[str]:
+    """
+    Return headlines relevant to a specific NSE symbol.
+
+    Matches on:
+      1. The symbol string itself (e.g. "RELIANCE" in headline)
+      2. Sector keywords from _SECTOR_KEYWORDS map
+
+    Returns at most 3 matches. Returns [] if nothing relevant found.
+    """
+    if not headlines:
+        return []
+
+    symbol_upper = symbol.upper()
+    keywords = _SECTOR_KEYWORDS.get(symbol_upper, [])
+    # Always include the bare symbol name as a keyword
+    search_terms = [symbol_upper] + keywords
+
+    matches: list[str] = []
+    for headline in headlines:
+        hl_lower = headline.lower()
+        if any(term.lower() in hl_lower for term in search_terms):
+            matches.append(headline)
+        if len(matches) == 3:
+            break
+
+    return matches
+
+
 # ── Individual fetch helpers ──────────────────────────────────────────────────
 
 async def _fetch_india_vix(client: httpx.AsyncClient) -> Optional[float]:

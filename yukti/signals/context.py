@@ -15,16 +15,18 @@ def build_context(
     macro: "MacroContext",
     perf: dict,
     past_journal: str = "",
+    symbol_headlines: list[str] | None = None,
 ) -> str:
     """
     Assembles the complete prompt context for Claude.
 
     Args:
-        symbol:       Stock symbol e.g. "RELIANCE"
-        snap:         IndicatorSnapshot from indicators.compute()
-        macro:        MacroContext from services.macro_context_service.fetch_macro_context()
-        perf:         Performance state dict from state.get_performance_state()
-        past_journal: Similar past trade journal (from memory.retrieve)
+        symbol:           Stock symbol e.g. "RELIANCE"
+        snap:             IndicatorSnapshot from indicators.compute()
+        macro:            MacroContext from services.macro_context_service.fetch_macro_context()
+        perf:             Performance state dict from state.get_performance_state()
+        past_journal:     Similar past trade journal (from memory.retrieve)
+        symbol_headlines: Headlines filtered to this symbol/sector (optional)
     """
     # TYPE_CHECKING-style import to keep circular imports safe at runtime
     from yukti.services.macro_context_service import MacroContext  # noqa: F401
@@ -95,6 +97,10 @@ def build_context(
   Nearest swing low  : ₹{snap.nearest_swing_low:.2f}
   Distance to s.high : {(snap.nearest_swing_high - snap.close) / snap.close * 100:+.2f}%
   Distance to s.low  : {(snap.nearest_swing_low  - snap.close) / snap.close * 100:+.2f}%
+╚════════════════════════════════════════════════════════════════╝
+
+╔══ STOCK-SPECIFIC NEWS ═════════════════════════════════════════╗
+{chr(10).join(f'    • {h}' for h in symbol_headlines) if symbol_headlines else '  No relevant news found for this symbol.'}
 ╚════════════════════════════════════════════════════════════════╝
 
 ╔══ PAST SIMILAR SETUP ══════════════════════════════════════════╗
