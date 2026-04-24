@@ -65,6 +65,29 @@ python trainer/evaluate_vs_baseline.py --adapter_dir models/lora-candidate --bas
 ```
 
 
+Self-learning loop (autonomous)
+------------------------------
+
+The system can now run a full self-learning loop automatically (if enabled in config):
+
+1. Export new labeled data from the DB (last 7 days).
+2. Retrain a LoRA adapter if enough new data is available (min rows configurable).
+3. Evaluate the new adapter vs baseline using deterministic backtest.
+4. If metrics pass thresholds (configurable: win_rate, profit_factor), promote (stub).
+5. All actions are logged; errors are reported in logs.
+6. Safety: Only one run at a time (Redis lock), async subprocesses (non-blocking), GPU detection (defaults to dry-run if no GPU), and all thresholds are configurable in `yukti/config.py`.
+
+This is scheduled as a cron job in `yukti/scheduler/jobs.py` (job_self_learning_loop).
+To enable, set `enable_self_learning = True` in your config (default is False for safety).
+Configurable options in `yukti/config.py`:
+
+```
+enable_self_learning: bool = False
+self_learning_min_rows: int = 100
+self_learning_thresholds: dict = {"win_rate": 0.55, "profit_factor": 1.2}
+```
+
+
 
 
 3. Train an adapter (example):

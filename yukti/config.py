@@ -19,6 +19,23 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # ── Self-learning agent ─────────────────────────────
+    enable_self_learning: bool = False  # Safe default: must be enabled explicitly
+    self_learning_min_rows: int = 100
+    self_learning_thresholds: dict = Field(default_factory=lambda: {"win_rate": 0.55, "profit_factor": 1.2})
+    # Canary / rollout
+    enable_canary_routing: bool = False
+    canary_ratio: float = 0.10
+    canary_monitor_duration_seconds: int = 1800
+    canary_base_model: str = ""
+
+    # Artifact registry (optional S3)
+    artifact_registry_s3_bucket: str = ""
+    artifact_registry_s3_prefix: str = "yukti/models"
+    artifact_registry_s3_region: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+
     # ── Broker ────────────────────────────────────────
     dhan_client_id: str = ""
     dhan_access_token: str = ""

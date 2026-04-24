@@ -113,6 +113,42 @@ version_info = Info(
 )
 version_info.info({"version": "0.1.0", "mode": "paper"})
 
+# ── Canary & Self-learning metrics
+canary_requests = Counter(
+    "yukti_canary_requests_total",
+    "Total requests routed to a canary model",
+)
+
+canary_successes = Counter(
+    "yukti_canary_successes_total",
+    "Total successful canary responses",
+)
+
+canary_failures = Counter(
+    "yukti_canary_failures_total",
+    "Total failed canary responses",
+)
+
+canary_promotions = Counter(
+    "yukti_canary_promotions_total",
+    "Number of times a candidate was promoted to canary",
+)
+
+canary_rollbacks = Counter(
+    "yukti_canary_rollbacks_total",
+    "Number of canary rollbacks performed",
+)
+
+self_learning_runs = Counter(
+    "yukti_self_learning_runs_total",
+    "Number of self-learning loop runs",
+)
+
+self_learning_failures = Counter(
+    "yukti_self_learning_failures_total",
+    "Number of self-learning loop failures",
+)
+
 
 # ── FastAPI endpoint helper ───────────────────────────────────────────────────
 

@@ -167,4 +167,322 @@ def build_scheduler() -> AsyncIOScheduler:
     # Learning loop: run during low-traffic hours (config-gated)
     if getattr(settings, "enable_learning_loop", False):
         sched.add_job(job_learning_loop, "cron", hour=2, minute=0)
+    # Self-learning loop: runs at 3am if enabled
+    if getattr(settings, "enable_self_learning", True):
+        sched.add_job(job_self_learning_loop, "cron", hour=3, minute=0)
     return sched
+
+
+# ── Self-learning loop: continuous ingestion, retrain, eval, promote ──────────
+
+import logging
+from datetime import datetime, timedelta
+import os
+import torch
+import asyncio
+import json
+
+import redis.asyncio as aioredis
+
+async def job_self_learning_loop() -> None:
+    """Self-learning loop: export new data, retrain if enough, evaluate, promote if pass."""
+    log = logging.getLogger("self_learning_loop")
+    from yukti.config import settings
+    # Locking: try Redis, fallback to file lock
+    lock_key = "yukti:self_learning_lock"
+    lock_ttl = 60 * 60  # 1 hour
+    redis_url = getattr(settings, "redis_url", "redis://localhost:6379/0")
+    r = None
+    have_lock = False
+    file_lock_path = "data/training/self_learning.lock"
+    using_file_lock = False
+    try:
+        try:
+            r = await aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+            have_lock = await r.set(lock_key, "1", ex=lock_ttl, nx=True)
+            if not have_lock:
+                log.warning("Self-learning loop already running (Redis lock held)")
+                return
+        except Exception as exc:
+            log.warning(f"Redis unavailable ({exc}); falling back to file lock")
+            # File lock fallback
+            import os, time
+            if os.path.exists(file_lock_path):
+                # If lock file is recent (< lock_ttl), abort
+                if time.time() - os.path.getmtime(file_lock_path) < lock_ttl:
+                    log.warning("Self-learning loop already running (file lock held)")
+                    return
+                else:
+                    os.remove(file_lock_path)
+            with open(file_lock_path, "w") as fh:
+                fh.write(str(os.getpid()))
+            have_lock = True
+            using_file_lock = True
+
+        # 1. Export new data since last run (default: last 7 days)
+        out_path = "data/training/journal_export.jsonl"
+        since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        log.info(f"[SelfLearning] Exporting new data since {since}")
+        artifact_dir = f"artifacts/self_learning/{datetime.now().strftime('%Y%m%d')}"
+        os.makedirs(artifact_dir, exist_ok=True)
+        exporter_log = os.path.join(artifact_dir, "exporter.log")
+        proc = await asyncio.create_subprocess_exec(
+            "python", "scripts/export_training_data.py", "--out", out_path, "--since", since,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        with open(exporter_log, "w", encoding="utf-8") as fh:
+            fh.write(stdout.decode(errors="replace"))
+            fh.write("\n--- STDERR ---\n")
+            fh.write(stderr.decode(errors="replace"))
+        if proc.returncode != 0:
+            log.error(f"Exporter failed: {stderr.decode().strip()} (see {exporter_log})")
+            return
+        log.info(f"Exporter output: {stdout.decode().strip()} (full log: {exporter_log})")
+
+        # 2. Check if enough new data (configurable)
+        min_rows = getattr(settings, "self_learning_min_rows", 100)
+        n_rows = 0
+        try:
+            with open(out_path, "r", encoding="utf-8") as fh:
+                n_rows = sum(1 for _ in fh)
+        except Exception as exc:
+            log.error(f"Failed to count exported rows: {exc}")
+            return
+        if n_rows < min_rows:
+            log.info(f"Not enough new data for retraining: {n_rows} rows (min required: {min_rows})")
+            return
+        log.info(f"Proceeding to retrain: {n_rows} rows")
+
+        # 3. Retrain adapter (dry-run if no GPU)
+        model_id = "facebook/opt-125m"
+        out_dir = f"models/lora-auto-{datetime.now().strftime('%Y%m%d')}"
+        dry_run = not torch.cuda.is_available()
+        log.info(f"Training adapter to {out_dir} (dry_run={dry_run})")
+        train_args = [
+            "python", "trainer/train_adapter.py", "--data", out_path, "--model", model_id, "--out_dir", out_dir, "--epochs", "3", "--use_peft", "auto"
+        ]
+        if dry_run:
+            train_args.append("--dry_run")
+        trainer_log = os.path.join(artifact_dir, "trainer.log")
+        proc = await asyncio.create_subprocess_exec(
+            *train_args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        with open(trainer_log, "w", encoding="utf-8") as fh:
+            fh.write(stdout.decode(errors="replace"))
+            fh.write("\n--- STDERR ---\n")
+            fh.write(stderr.decode(errors="replace"))
+        if proc.returncode != 0:
+            log.error(f"Trainer failed: {stderr.decode().strip()} (see {trainer_log})")
+            return
+        log.info(f"Trainer output: {stdout.decode().strip()} (full log: {trainer_log})")
+
+        # 4. Evaluate new adapter vs baseline
+        eval_dir = f"artifacts/eval/{datetime.now().strftime('%Y%m%d')}"
+        os.makedirs(eval_dir, exist_ok=True)
+        log.info(f"Evaluating new adapter in {eval_dir}")
+        eval_args = [
+            "python", "trainer/evaluate_vs_baseline.py", "--adapter_dir", out_dir, "--base_model", model_id, "--out_dir", eval_dir
+        ]
+        eval_log = os.path.join(artifact_dir, "evaluate.log")
+        proc = await asyncio.create_subprocess_exec(
+            *eval_args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        with open(eval_log, "w", encoding="utf-8") as fh:
+            fh.write(stdout.decode(errors="replace"))
+            fh.write("\n--- STDERR ---\n")
+            fh.write(stderr.decode(errors="replace"))
+        if proc.returncode != 0:
+            log.error(f"Evaluation failed: {stderr.decode().strip()} (see {eval_log})")
+            return
+        log.info(f"Evaluation output: {stdout.decode().strip()} (full log: {eval_log})")
+
+        # 5. Check metrics and promote if pass (configurable thresholds).
+        # If promoted, package artifacts, optionally upload to S3, set canary pointer
+        # and run a short monitoring evaluation. Roll back automatically on failure.
+        try:
+            from yukti.artifacts import package_and_publish
+            from yukti.agents import canary as canary_mod
+            from yukti.metrics import (
+                self_learning_runs, self_learning_failures,
+                canary_promotions, canary_rollbacks,
+            )
+        except Exception:
+            canary_mod = None
+
+        # Count this run
+        try:
+            from yukti.metrics import self_learning_runs
+            self_learning_runs.inc()
+        except Exception:
+            pass
+
+        metrics_path = os.path.join(eval_dir, "compare_metrics.json")
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as fh:
+                metrics = json.load(fh)
+            candidate = metrics.get("candidate") or {}
+            thresholds = getattr(settings, "self_learning_thresholds", {"win_rate": 0.55, "profit_factor": 1.2})
+            win_rate = float(candidate.get("win_rate", 0.0))
+            profit_factor = float(candidate.get("profit_factor", 0.0))
+
+            passed = (win_rate > thresholds.get("win_rate", 0.55) and
+                      profit_factor > thresholds.get("profit_factor", 1.2))
+
+            if passed:
+                log.info(f"Candidate PASSED: win_rate={win_rate:.2f}, profit_factor={profit_factor:.2f} — PROMOTE to canary")
+
+                # Package & publish artifact (zip + sha + optional S3 upload)
+                try:
+                    meta = package_and_publish(out_dir, out_dir=artifact_dir)
+                    log.info(f"Packaged model artifact: {meta.get('archive_path')} sha={meta.get('sha256')}")
+                except Exception as exc:
+                    log.warning(f"Artifact packaging failed: {exc}")
+
+                # Promote to canary: record previous value and set active pointer via helper
+                try:
+                    import shutil
+                    canary_dir = f"models/canary/{datetime.now().strftime('%Y%m%d')}"
+                    shutil.rmtree(canary_dir, ignore_errors=True)
+                    shutil.copytree(out_dir, canary_dir)
+                    # use canary helper to set active pointer
+                    try:
+                        if canary_mod is not None:
+                            await canary_mod.set_active_canary(canary_dir)
+                    except Exception:
+                        # best effort
+                        try:
+                            with open("models/canary/active.txt", "w", encoding="utf-8") as fh:
+                                fh.write(canary_dir)
+                        except Exception:
+                            pass
+
+                    log.info(f"Promoted candidate to canary: {canary_dir}")
+                    try:
+                        from yukti.metrics import canary_promotions
+                        canary_promotions.inc()
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    log.error(f"Canary promotion failed: {exc}")
+
+                # Telegram alert for promotion
+                try:
+                    from yukti.telegram.bot import alert as tg_alert
+                    import asyncio as _asyncio
+                    msg = (
+                        f"🚀 *Self-learning promotion: CANARY DEPLOYED*\n"
+                        f"Model: `{canary_dir}`\n"
+                        f"Win rate: {win_rate:.2%}\nProfit factor: {profit_factor:.2f}"
+                    )
+                    _asyncio.create_task(tg_alert(msg))
+                except Exception:
+                    pass
+
+                # Short monitoring evaluation: run a smaller evaluation and rollback on failure
+                try:
+                    monitor_dir = os.path.join(artifact_dir, "monitor")
+                    os.makedirs(monitor_dir, exist_ok=True)
+                    mon_args = [
+                        "python", "trainer/evaluate_vs_baseline.py",
+                        "--adapter_dir", out_dir,
+                        "--base_model", model_id,
+                        "--out_dir", monitor_dir,
+                        "--bootstrap", "100",
+                    ]
+                    mon_log = os.path.join(artifact_dir, "monitor.log")
+                    proc = await asyncio.create_subprocess_exec(
+                        *mon_args,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await proc.communicate()
+                    with open(mon_log, "w", encoding="utf-8") as fh:
+                        fh.write(stdout.decode(errors="replace"))
+                        fh.write("\n--- STDERR ---\n")
+                        fh.write(stderr.decode(errors="replace"))
+                    if proc.returncode != 0:
+                        log.warning(f"Monitor evaluation failed: {stderr.decode().strip()} (see {mon_log})")
+                    else:
+                        # Read monitor metrics
+                        try:
+                            mon_metrics_path = os.path.join(monitor_dir, "compare_metrics.json")
+                            with open(mon_metrics_path, "r", encoding="utf-8") as fh:
+                                mon_metrics = json.load(fh)
+                            mon_candidate = mon_metrics.get("candidate", {})
+                            mon_win = float(mon_candidate.get("win_rate", 0.0))
+                            mon_pf = float(mon_candidate.get("profit_factor", 0.0))
+                            # If monitor shows regression beyond threshold, rollback
+                            if mon_win < thresholds.get("win_rate", 0.55) or mon_pf < thresholds.get("profit_factor", 1.2):
+                                # rollback to previous
+                                prev = None
+                                try:
+                                    if canary_mod is not None:
+                                        prev = await canary_mod.get_previous_active()
+                                except Exception:
+                                    prev = None
+                                if prev:
+                                    try:
+                                        if canary_mod is not None:
+                                            await canary_mod.set_active_canary(prev)
+                                        else:
+                                            with open("models/canary/active.txt", "w", encoding="utf-8") as fh:
+                                                fh.write(prev)
+                                        from yukti.metrics import canary_rollbacks
+                                        canary_rollbacks.inc()
+                                    except Exception:
+                                        log.warning("Rollback attempted but failed to restore previous active canary")
+                                # Alert
+                                try:
+                                    from yukti.telegram.bot import alert as tg_alert
+                                    import asyncio as _asyncio
+                                    _asyncio.create_task(tg_alert(f"⚠️ Canary rollback triggered after monitoring: win={mon_win:.2%} pf={mon_pf:.2f}"))
+                                except Exception:
+                                    pass
+                except Exception as exc:
+                    log.warning(f"Canary monitor failed (non-fatal): {exc}")
+
+            else:
+                log.info(f"Candidate did NOT pass: win_rate={win_rate:.2f}, profit_factor={profit_factor:.2f}")
+                try:
+                    from yukti.telegram.bot import alert as tg_alert
+                    import asyncio as _asyncio
+                    msg = (
+                        f"❌ *Self-learning candidate rejected*\n"
+                        f"Win rate: {win_rate:.2%}\nProfit factor: {profit_factor:.2f}"
+                    )
+                    _asyncio.create_task(tg_alert(msg))
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.error(f"Failed to process promotion/monitoring: {exc}")
+            try:
+                from yukti.metrics import self_learning_failures
+                self_learning_failures.inc()
+            except Exception:
+                pass
+    except Exception as exc:
+        log.error(f"Self-learning loop failed: {exc}")
+    finally:
+        # Release lock
+        try:
+            if have_lock:
+                if using_file_lock:
+                    import os
+                    if os.path.exists(file_lock_path):
+                        os.remove(file_lock_path)
+                elif r is not None:
+                    await r.delete(lock_key)
+        except Exception:
+            pass
+        # Close Redis connection if open
+        try:
+            if r is not None:
+                await r.close()
+                if hasattr(r, "wait_closed"):
+                    await r.wait_closed()
+        except Exception:
+            pass

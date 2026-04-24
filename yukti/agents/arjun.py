@@ -519,6 +519,82 @@ class ABTestProvider(BaseProvider):
 
         return primary_decision, primary_meta
 
+
+# ═══════════════════════════════════════════════════════════════
+#  CANARY ROUTER PROVIDER
+#  Routes a fraction of calls to a locally-hosted canary adapter.
+#  Falls back to primary provider on any error.
+# ═══════════════════════════════════════════════════════════════
+
+
+class CanaryRouterProvider(BaseProvider):
+    """Route a percentage of calls to an active canary model.
+
+    The active canary path & ratio are managed by `yukti.agents.canary`.
+    The local adapter is loaded lazily to avoid heavy imports at module
+    import time.
+    """
+
+    def __init__(self, primary_name: str) -> None:
+        # Primary provider (could be gemini/claude/ab_test/etc.)
+        primary_name = primary_name or settings.ai_provider
+        if primary_name == "ab_test":
+            primary_name = settings.ab_primary
+        self._primary = _build_provider(primary_name)
+        self._canary_provider = None
+        self._canary_path = None
+
+        try:
+            from yukti.metrics import canary_requests
+            self._metrics_canary_requests = canary_requests
+        except Exception:
+            self._metrics_canary_requests = None
+
+    async def call(self, context: str) -> tuple[TradeDecision, CallMeta]:
+        # Decide whether to route to canary
+        try:
+            from yukti.agents import canary as canary_mod
+        except Exception:
+            canary_mod = None
+
+        route_canary = False
+        if canary_mod is not None:
+            try:
+                route_canary = await canary_mod.should_route_to_canary()
+            except Exception:
+                route_canary = False
+
+        if route_canary:
+            # increment metric if present
+            try:
+                from yukti.metrics import canary_requests
+                canary_requests.inc()
+            except Exception:
+                pass
+
+            try:
+                canary_path = await canary_mod.get_active_canary() if canary_mod is not None else None
+                if canary_path:
+                    # Lazy import to avoid circular imports
+                    try:
+                        from yukti.agents.local_adapter import LocalAdapterProvider
+                        if self._canary_provider is None or self._canary_path != canary_path:
+                            self._canary_provider = LocalAdapterProvider(
+                                adapter_dir=canary_path,
+                                base_model=getattr(settings, "canary_base_model", None),
+                                device=getattr(settings, "canary_device", "cpu"),
+                            )
+                            self._canary_path = canary_path
+                        return await self._canary_provider.call(context)
+                    except Exception:
+                        # fall through to primary on any canary failure
+                        pass
+            except Exception:
+                pass
+
+        # Default: call primary provider
+        return await self._primary.call(context)
+
     async def _safe_call(
         self,
         provider: BaseProvider,
@@ -622,6 +698,12 @@ def _build_provider(name: str) -> BaseProvider:
 
 
 def build_arjun() -> "Arjun":
+    # Support optional canary routing that directs a fraction of calls
+    # to a local canary adapter while keeping the original primary provider.
+    if getattr(settings, "enable_canary_routing", False):
+        provider = CanaryRouterProvider(settings.ai_provider)
+        return Arjun(provider)
+
     provider_name = settings.ai_provider
     if provider_name == "ab_test":
         provider = ABTestProvider()
