@@ -1,0 +1,63 @@
+name: Manual — Promote Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: 'Artifact name to retrieve'
+        required: true
+        default: 'ci-artifacts'
+
+jobs:
+  promote:
+    name: Promote model (manual approval required)
+    runs-on: ubuntu-latest
+    environment: model-promotion
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact_name }}
+          path: ci-artifacts
+
+      - name: Prepare promotion report
+        run: |
+          echo "Promotion requested by $GITHUB_ACTOR" > promotion_report.md
+          echo "Artifact: ${{ github.event.inputs.artifact_name }}" >> promotion_report.md
+          echo "Review artifacts in ci-artifacts/ and confirm rollout." >> promotion_report.md
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Contents of ci-artifacts:" > ci_artifacts_list.txt
+          ls -R ci-artifacts || true
+          echo "" >> promotion_report.md
+          echo "Files downloaded to ci-artifacts/ (listed in ci_artifacts_list.txt):" >> promotion_report.md
+          cat ci_artifacts_list.txt >> promotion_report.md || true
+
+      - name: Append backtest metrics to report (if present)
+        run: |
+          python - <<'PY'
+import os, json
+out = 'promotion_report.md'
+metrics_path = os.path.join('ci-artifacts', 'artifacts', 'backtest', 'backtest_metrics.json')
+with open(out, 'a') as fh:
+    fh.write('\n\n**Backtest metrics (from artifacts/backtest/backtest_metrics.json)**\n')
+    if os.path.exists(metrics_path):
+        try:
+            data = json.load(open(metrics_path))
+            for k, v in data.items():
+                fh.write(f'{k}: {v}\n')
+        except Exception as e:
+            fh.write(f'Error reading metrics file: {e}\n')
+    else:
+        fh.write('No backtest metrics found at ' + metrics_path + '\n')
+PY
+
+      - name: Upload promotion report
+        uses: actions/upload-artifact@v4
+        with:
+          name: promotion-report
+          path: promotion_report.md

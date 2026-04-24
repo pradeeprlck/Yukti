@@ -1,0 +1,61 @@
+name: CI — Retrain & Eval (dry-run)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  retrain-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r trainer/requirements.txt
+          pip install -e .
+
+      - name: Export training data
+        run: |
+          mkdir -p data/training
+          python scripts/export_training_data.py --out data/training/ci_export.jsonl --limit 200
+
+      - name: Dry-run preprocess / train
+        run: |
+          python trainer/train_adapter.py --data data/training/ci_export.jsonl --out_dir models/ci-lora --epochs 1 --batch_size 4 --dry_run > preprocess.log || true
+
+      - name: Evaluate (best-effort)
+        run: |
+          python trainer/eval.py --model_dir models/ci-lora --data data/training/ci_export.jsonl > eval.log || true
+
+      - name: Run CI backtest (deterministic)
+        run: |
+          python scripts/ci_backtest.py --out_dir artifacts/backtest > backtest.log || true
+
+      - name: Summarize artifacts
+        run: |
+          echo "## CI retrain report" > ci_report.md
+          exported=$(wc -l data/training/ci_export.jsonl | awk '{print $1}' || echo 0)
+          echo "Exported rows: $exported" >> ci_report.md
+          if [ -d "models/ci-lora" ]; then echo "Model present: yes" >> ci_report.md; else echo "Model present: no" >> ci_report.md; fi
+          echo "Logs: preprocess.log, eval.log" >> ci_report.md
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: |
+            data/training/ci_export.jsonl
+            preprocess.log
+            eval.log
+            ci_report.md
+            models/ci-lora
+            artifacts/backtest/backtest_metrics.json
+            artifacts/backtest/backtest_trades.csv
+            backtest.log

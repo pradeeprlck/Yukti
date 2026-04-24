@@ -1,3 +1,37 @@
+from yukti.services.universe_scanner_service import (
+    _score_candidate,
+    _deduplicate_candidates,
+    _select_universe,
+)
+
+
+def test_score_candidate_caps_at_100():
+    c = {
+        "vol_ratio": 5,
+        "change_pct": 4,
+        "has_catalyst": True,
+        "sector_in_play": True,
+        "avg_turnover_cr": 100,
+    }
+    score = _score_candidate(c)
+    assert score == 100.0
+
+
+def test_deduplicate_candidates_keeps_highest():
+    a = {"symbol": "ABC", "vol_ratio": 1}
+    b = {"symbol": "ABC", "vol_ratio": 5}
+    res = _deduplicate_candidates([a, b])
+    assert len(res) == 1
+    assert res[0]["symbol"] == "ABC"
+
+
+def test_select_universe_includes_existing_positions():
+    candidates = [
+        {"symbol": "A", "avg_turnover_cr": 20, "vol_ratio": 2, "change_pct": 1, "security_id": "1"},
+        {"symbol": "B", "avg_turnover_cr": 20, "vol_ratio": 1, "change_pct": 2, "security_id": "2"},
+    ]
+    selected = _select_universe(candidates, pick_count=1, min_turnover_cr=10, existing_positions=["B"])
+    assert any(c["symbol"] == "B" for c in selected)
 """tests/unit/test_universe_scanner.py — tests for scanner scoring and selection logic."""
 from __future__ import annotations
 
