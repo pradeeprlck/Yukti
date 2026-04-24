@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED: Use the `subagent-driven-development` agent (recommended) or `executing-plans` agent to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Progress (updated 2026-04-24):**
+- **Done (code + tests created, no test runner executed):** `yukti/config.py` scanner & daily candle settings added; `yukti/signals/indicators.py` timeframe + ADX + daily S/R implemented; `yukti/signals/patterns.py` contains `orb_breakout` and `vwap_bounce`; `yukti/services/universe_scanner_service.py` implemented; `yukti/signals/context.py` two-layer context + `compute_alignment` implemented; unit tests for these components added under `tests/unit/`.
+- **Done (integration wiring):** `yukti/services/market_scan_service.py` updated to fetch/cache daily candles and pass `indicators_daily`, total exposure computed; scheduler jobs for universe scan/refresh present in `yukti/scheduler/jobs.py`.
+- **Pending (manual actions or gated by CI / runtime):** running the test-suite locally/CI (user requested no script execution), committing via git (file edits are present but not committed), and any production run verification.
+
+Note: I updated code and added unit tests in the repository files. I did not run tests or make git commits per your instruction not to execute scripts. Reply with which next step you want me to take (e.g., run tests locally, add CI workflow, implement the learning loop, or mark checklist completed in this doc).
+
 **Goal:** Upgrade Yukti's signal generation pipeline with dynamic stock discovery, multi-timeframe analysis (daily + 5-min), and two new patterns (ORB + VWAP Bounce) to produce higher-quality, higher-volume trade opportunities.
 
 **Architecture:** Three layered pillars: (1) A new `universe_scanner_service.py` discovers stocks via volume/volatility/news/sector signals and writes to Redis. (2) `indicators.py` gains a `timeframe` parameter, ADX, and daily S/R; `context.py` builds a two-layer context string; `arjun.py` gets Step 1.5 for daily checks. (3) Two new patterns in `patterns.py` with time-gating, integrated into the scan pipeline via `market_scan_service.py`.

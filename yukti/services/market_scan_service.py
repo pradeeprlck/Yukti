@@ -14,7 +14,13 @@ import pandas as pd
 
 from yukti.agents.arjun import arjun
 from yukti.agents.memory import retrieve_similar
-from yukti.data.state import is_halted, get_performance_state, get_daily_pnl_pct, count_open_positions
+from yukti.data.state import (
+    is_halted,
+    get_performance_state,
+    get_daily_pnl_pct,
+    count_open_positions,
+    get_all_positions,
+)
 from yukti.execution.dhan_client import dhan
 from yukti.execution.order_sm import open_trade
 from yukti.metrics import signals_scanned, record_skip, record_trade_opened
@@ -210,11 +216,26 @@ class MarketScanService:
                     decision.target_2 = decision.target_2 or levels.target_2
                     decision.risk_reward = decision.risk_reward or levels.risk_reward
 
+                # Compute total exposure as sum(entry_price * quantity) / account_value
+                all_positions = await get_all_positions()
+                total_notional = 0.0
+                for p in all_positions.values():
+                    try:
+                        total_notional += float(p.get("entry_price", 0)) * int(p.get("quantity", 0))
+                    except Exception:
+                        continue
+
+                total_exposure_pct = (
+                    round(total_notional / settings.account_value * 100, 2)
+                    if settings.account_value
+                    else 0.0
+                )
+
                 portfolio = Portfolio(
                     account_value=settings.account_value,
                     open_positions=await count_open_positions(),
                     daily_pnl_pct=await get_daily_pnl_pct(),
-                    total_exposure_pct=0.0,
+                    total_exposure_pct=total_exposure_pct,
                 )
                 gate = await run_gates(decision, portfolio)
                 if not gate.passed:

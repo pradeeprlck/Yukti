@@ -10,6 +10,7 @@ from datetime import date, datetime, time, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 log = logging.getLogger(__name__)
+from yukti.config import settings
 
 # ── NSE holidays (update annually from NSE circular) ─────────────────────────
 NSE_HOLIDAYS: set[date] = {
@@ -110,6 +111,21 @@ async def job_daily_reset() -> None:
             log.error("Journal failed trade %d: %s", t.id, exc)
 
 
+async def job_learning_loop() -> None:
+    """Embed journal entries and write vectors to Postgres (runs at low-traffic hour)."""
+    if not getattr(settings, "voyage_api_key", None):
+        log.info("LearningLoop job skipped: voyage API key not configured")
+        return
+    log.info("=== learning loop: embedding pending journals ===")
+    from yukti.services.learning_loop_service import LearningLoopService
+    svc = LearningLoopService()
+    try:
+        count = await svc.run_once()
+        log.info("LearningLoop: processed %d entries", count)
+    except Exception as exc:
+        log.error("LearningLoop job failed: %s", exc)
+
+
 async def job_daily_report() -> None:
     from yukti.data.state import get_performance_state
     from yukti.telegram.bot import alert
@@ -148,4 +164,7 @@ def build_scheduler() -> AsyncIOScheduler:
     sched.add_job(job_eod_squareoff,    "cron", hour=15, minute=10)
     sched.add_job(job_daily_reset,      "cron", hour=16, minute=0)
     sched.add_job(job_daily_report,     "cron", hour=16, minute=30)
+    # Learning loop: run during low-traffic hours (config-gated)
+    if getattr(settings, "enable_learning_loop", False):
+        sched.add_job(job_learning_loop, "cron", hour=2, minute=0)
     return sched
