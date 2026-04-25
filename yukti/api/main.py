@@ -125,11 +125,11 @@ def create_app() -> FastAPI:
     )
 
     # ── Routers ────────────────────────────────────────────────────────────────
-    app.include_router(positions_router)
-    app.include_router(pnl_router)
-    app.include_router(trades_router)
-    app.include_router(journal_router)
-    app.include_router(control_router)
+    app.include_router(positions_router, prefix="/api")
+    app.include_router(pnl_router,       prefix="/api")
+    app.include_router(trades_router,    prefix="/api")
+    app.include_router(journal_router,   prefix="/api")
+    app.include_router(control_router,   prefix="/api")
 
     # ── Core endpoints ─────────────────────────────────────────────────────────
 
@@ -201,3 +201,7 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
