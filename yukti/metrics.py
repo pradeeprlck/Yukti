@@ -150,6 +150,23 @@ self_learning_failures = Counter(
 )
 
 
+# ── RAG retrieval metrics ───────────────────────────────────────────────────
+rag_retrieval_count = Counter(
+    "yukti_rag_retrievals_total",
+    "Number of RAG retrieval operations performed",
+)
+
+rag_avg_similarity = Gauge(
+    "yukti_rag_avg_similarity",
+    "Average similarity of last RAG retrieval candidates",
+)
+
+rag_quality_score_avg = Gauge(
+    "yukti_rag_quality_score_avg",
+    "Average journal reflection quality score for retrievals",
+)
+
+
 # ── FastAPI endpoint helper ───────────────────────────────────────────────────
 
 def metrics_response() -> tuple[bytes, str]:

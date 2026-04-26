@@ -1,70 +1,140 @@
 """
 yukti/agents/journal.py
-Writes a 4-sentence reflective journal entry after every closed trade.
-The text is stored in PostgreSQL with a pgvector embedding for semantic retrieval.
+Structured journal reflection writer.
+Generates a JSON reflection and returns a validated JournalReflection model.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from datetime import datetime
+from typing import Optional
 
 import anthropic
 
 from yukti.config import settings
+from yukti.agents.rag_schemas import JournalReflection
 
 log = logging.getLogger(__name__)
 
 
 async def write_journal_entry(
-    symbol:      str,
-    direction:   str,
-    setup_type:  str,
-    entry:       float,
-    stop_loss:   float,
-    target:      float,
-    exit_price:  float,
-    exit_reason: str,
-    pnl_pct:     float,
-    conviction:  int,
-    reasoning:   str,
-) -> str:
-    """
-    Ask Claude to write a reflective 4-sentence journal entry for a closed trade.
-    Returns the journal text string.
+  symbol:      str,
+  direction:   str,
+  setup_type:  str,
+  entry:       float,
+  stop_loss:   float,
+  target:      float,
+  exit_price:  float,
+  exit_reason: str,
+  pnl_pct:     float,
+  conviction:  int,
+  reasoning:   str,
+) -> JournalReflection:
+  """
+  Ask Claude to write a structured JSON reflection for a closed trade.
+  Returns a `JournalReflection` Pydantic model. If LLM parsing fails,
+  returns a best-effort reflection with `quality_score=0`.
+  """
 
-    The text is:
-      1. What the setup was and why I entered.
-      2. What happened during the trade.
-      3. Why it worked / failed (specific and honest).
-      4. One concrete change for next time.
-    """
-    prompt = f"""A trade just closed. Write a 4-sentence reflective journal entry.
+  prompt = f"""
+You are a concise trading journal assistant. A trade just closed — produce a JSON object ONLY.
 
-Trade details:
-  Symbol      : {symbol}
-  Direction   : {direction}
-  Setup       : {setup_type}
-  Entry       : ₹{entry:.2f}  |  SL ₹{stop_loss:.2f}  |  Target ₹{target:.2f}
-  Exit        : ₹{exit_price:.2f}  ({exit_reason})
-  P&L         : {pnl_pct:+.2f}%
-  Conviction  : {conviction}/10
+Input fields:
+  symbol: "{symbol}"
+  direction: "{direction}"
+  setup_type: "{setup_type}"
+  entry: {entry:.2f}
+  stop_loss: {stop_loss:.2f}
+  target: {target:.2f}
+  exit_price: {exit_price:.2f}
+  exit_reason: "{exit_reason}"
+  pnl_pct: {pnl_pct:+.2f}
+  conviction: {conviction}
+  reasoning: "{reasoning}"
 
-Reasoning at entry:
-  "{reasoning}"
+Produce JSON with the following keys:
+- entry_text: short human-readable 1-2 sentence summary (first-person).
+- quality_score: integer 0-10 (0 = useless, 10 = excellent insight).
+- key_lesson: one short sentence describing the single most important lesson.
+- setup_type: string (reuse or refine the input setup_type).
+- market_regime: one of [BULLISH, BEARISH, NEUTRAL, VOLATILE] if applicable, else null.
+- outcome_reason: 1-2 sentence explanation why trade won/lost.
+- one_actionable_lesson: one concrete action to take next time.
 
-Write exactly 4 sentences:
-  1. What the setup was and why I entered it.
-  2. What happened during the trade.
-  3. Why it worked (or failed) — be specific and honest.
-  4. One concrete thing I will do differently next time in a similar setup.
+Return ONLY valid JSON (no surrounding text, no markdown fences). Keep values short.
+""".strip()
 
-First person. Direct. No filler."""
+  loop = asyncio.get_event_loop()
+  client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    client   = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    response = client.messages.create(
-        model      = settings.claude_model,
-        max_tokens = 350,
-        messages   = [{"role": "user", "content": prompt}],
+  try:
+    response = await loop.run_in_executor(
+      None,
+      lambda: client.messages.create(
+        model=settings.claude_model,
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+      ),
     )
-    text = response.content[0].text.strip()
-    log.debug("Journal written for %s %s (%.2f%%)", symbol, direction, pnl_pct)
-    return text
+    raw = response.content[0].text.strip()
+  except Exception as exc:
+    log.warning("Journal writer LLM call failed for %s: %s", symbol, exc)
+    raw = ""
+
+  # Try parse JSON directly
+  parsed: Optional[dict] = None
+  if raw:
+    try:
+      # strip possible fences
+      if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1] if len(parts) > 1 else raw
+      parsed = json.loads(raw)
+    except Exception:
+      parsed = None
+
+  if parsed is None:
+    # Fallback: create a minimal reflection using the free-text output
+    entry_text = (raw.splitlines()[0] if raw else f"Trade {symbol} closed: {pnl_pct:+.2f}%")
+    refl = JournalReflection(
+      entry_text=str(entry_text),
+      quality_score=0,
+      key_lesson="",
+      setup_type=setup_type,
+      market_regime=None,
+      outcome_reason=str(exit_reason or ""),
+      one_actionable_lesson="",
+      created_at=datetime.utcnow(),
+    )
+    log.info("Journal written (fallback) for %s quality=%d", symbol, refl.quality_score)
+    return refl
+
+  # Validate and convert to JournalReflection
+  try:
+    refl = JournalReflection(
+      entry_text=parsed.get("entry_text") or parsed.get("journal") or "",
+      quality_score=int(parsed.get("quality_score", 0)),
+      key_lesson=parsed.get("key_lesson") or parsed.get("lesson") or "",
+      setup_type=parsed.get("setup_type") or setup_type,
+      market_regime=parsed.get("market_regime"),
+      outcome_reason=parsed.get("outcome_reason") or parsed.get("why"),
+      one_actionable_lesson=parsed.get("one_actionable_lesson") or parsed.get("actionable"),
+      created_at=datetime.utcnow(),
+    )
+  except Exception as exc:
+    log.warning("Journal parsing/validation failed for %s: %s — raw=%s", symbol, exc, raw[:300])
+    refl = JournalReflection(
+      entry_text=raw[:1000],
+      quality_score=0,
+      key_lesson="",
+      setup_type=setup_type,
+      market_regime=None,
+      outcome_reason=str(exit_reason or ""),
+      one_actionable_lesson="",
+      created_at=datetime.utcnow(),
+    )
+
+  log.info("Journal written for %s quality=%d", symbol, refl.quality_score)
+  return refl

@@ -740,12 +740,70 @@ class Arjun:
             settings.ai_provider,
         )
 
+    def _trim_context(self, context: str) -> str:
+        """Trim the context to avoid token waste while preserving the PAST SIMILAR section when possible.
+
+        Strategy:
+        - If context length <= `rag_max_context_chars`, return unchanged.
+        - Prefer to preserve the prefix (market/stock context) and truncate the "PAST SIMILAR" block.
+        - If no marker found, trim the tail safely.
+        """
+        max_chars = getattr(settings, "rag_max_context_chars", 4000)
+        if not context or len(context) <= max_chars:
+            return context
+
+        markers = ["╔══ PAST SIMILAR SETUP", "Past Similar Trades", "PAST SIMILAR SETUP"]
+        idx = -1
+        for m in markers:
+            idx = context.find(m)
+            if idx != -1:
+                marker = m
+                break
+        else:
+            marker = None
+
+        if marker and idx != -1:
+            prefix = context[:idx]
+            past = context[idx:]
+            # Reserve some headroom
+            reserve = 120
+            allowed_past = max_chars - len(prefix) - reserve
+            if allowed_past <= 100:
+                # Prefix too large, fallback to simple head trim
+                trimmed = context[: max_chars - 10] + "\n\n...[TRUNCATED]"
+                log.info("Context truncated: prefix too large, trimmed to %d chars", max_chars)
+                return trimmed
+
+            if len(past) <= allowed_past:
+                # prefix+past still too long? trim prefix
+                total = prefix + past
+                if len(total) <= max_chars:
+                    return total
+                return total[: max_chars - 10] + "\n\n...[TRUNCATED]"
+
+            # Trim past section to last newline within allowed_past
+            candidate = past[:allowed_past]
+            cut = candidate.rfind("\n")
+            if cut <= 0:
+                cut = allowed_past
+            truncated_past = past[:cut] + "\n\n  ...[TRUNCATED older retrieved items]\n"
+            new_context = prefix + truncated_past
+            log.info("Context truncated: past-similar section reduced to fit %d chars", max_chars)
+            return new_context
+
+        # No marker — simple tail trim
+        trimmed = context[: max_chars - 10] + "\n\n...[TRUNCATED]"
+        log.info("Context truncated: no PAST marker, trimmed to %d chars", max_chars)
+        return trimmed
+
     async def decide(self, context: str) -> tuple[TradeDecision, CallMeta]:
         """
         Make a trade decision. Returns (TradeDecision, CallMeta).
         Raises on unrecoverable error (tenacity exhausted).
         """
-        decision, meta = await self._provider.call(context)
+        # Trim context to avoid token waste and keep retrieval concise
+        safe_context = self._trim_context(context)
+        decision, meta = await self._provider.call(safe_context)
 
         log.info(
             "[%s] %s %s conviction=%d bias=%s  %.0fms",

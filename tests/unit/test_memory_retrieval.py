@@ -40,7 +40,7 @@ async def test_retrieve_similar_formats_results(monkeypatch):
 
     out = await memory.retrieve_similar("ABC", "ORB", "LONG", top_k=1)
     assert out
-    assert "Past similar setups" in out
+    assert "Past Similar Trades" in out
     assert "ABC" in out
 
 
@@ -52,6 +52,26 @@ async def test_retrieve_similar_embed_failure_returns_empty(monkeypatch):
         raise RuntimeError("embed fail")
 
     monkeypatch.setattr(memory, "_embed", fake_embed)
+
+    # Ensure DB fallback returns no rows so function yields empty string
+    def fake_get_db_empty():
+        class DBCtx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, sql, params):
+                class Res:
+                    def fetchall(self):
+                        return []
+
+                return Res()
+
+        return DBCtx()
+
+    monkeypatch.setattr("yukti.data.database.get_db", fake_get_db_empty)
 
     out = await memory.retrieve_similar("ABC", "ORB", "LONG")
     assert out == ""

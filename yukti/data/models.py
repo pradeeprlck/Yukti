@@ -8,7 +8,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, func, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -89,6 +89,14 @@ class JournalEntry(Base):
 
     # 1024-dim Voyage AI embedding
     embedding:  Mapped[Optional[list[float]]] = mapped_column(Vector(1024), nullable=True)
+
+    # New structured reflection fields (quality, lessons, metadata)
+    quality_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    key_lesson: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    market_regime: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    outcome_reason: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    one_actionable_lesson: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    discarded: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

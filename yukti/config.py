@@ -130,6 +130,16 @@ class Settings(BaseSettings):
     daily_journal:  str = "16:00"
     position_recon: str = "09:05"
 
+    # ── RAG / Retrieval settings (self-learning)
+    rag_max_retrieved_items: int = 4
+    rag_recency_days: int = 90
+    rag_min_quality_score: int = 6
+    rag_outcome_weight_win: float = 1.2
+    rag_recency_half_life_days: int = 365
+    rag_max_fetch_candidates: int = 50
+    rag_diversity_lambda: float = 0.7
+    rag_max_context_chars: int = 4000
+
     # ── DhanHQ constants ──────────────────────────────
     exchange_nse:     str = "NSE_EQ"
     exchange_bse:     str = "BSE_EQ"
