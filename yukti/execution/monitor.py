@@ -37,6 +37,15 @@ async def monitor_positions(poll_interval: int = 10) -> None:
     while True:
         await asyncio.sleep(poll_interval)
 
+        # Quick broker-side check to catch fills executed via GTTs
+        # which may not be immediately reflected in Redis/Postgres.
+        try:
+            broker_positions_raw = await dhan.get_positions()
+            broker_symbols = {bp.get("tradingSymbol") for bp in broker_positions_raw if int(bp.get("netQty", 0)) != 0}
+        except Exception as exc:
+            broker_symbols = set()
+            log.debug("Monitor: could not fetch broker positions: %s", exc)
+
         positions = await get_all_positions()
         if not positions:
             continue
@@ -46,6 +55,18 @@ async def monitor_positions(poll_interval: int = 10) -> None:
                 continue
 
             security_id = pos.get("security_id", "")
+            # If broker no longer reports the symbol but our DB thinks ARMED/FILLED,
+            # schedule an immediate reconciliation to avoid stale Redis state.
+            if pos.get("status") in ("ARMED", "FILLED") and broker_symbols and symbol not in broker_symbols:
+                log.warning("Monitor: broker has no position for %s but state=%s — scheduling reconciliation", symbol, pos.get("status"))
+                try:
+                    from yukti.execution.reconcile import reconcile_positions
+                    asyncio.create_task(reconcile_positions())
+                except Exception as exc:
+                    log.error("Monitor: failed to schedule reconciliation: %s", exc)
+                # Skip per-symbol market checks once we scheduled reconcile
+                continue
+
             try:
                 candles = await dhan.get_candles(security_id, interval="1")
                 if not candles:

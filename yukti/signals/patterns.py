@@ -219,8 +219,22 @@ def orb_breakout(
     if candles is None or len(candles) < 3:
         return PatternSignal(False, "orb_breakout", 0.0, "")
 
-    # Compute opening range from first 3 candles
-    or_candles = candles.iloc[:3]
+    # Compute opening range from first 3 fully-closed candles (avoid look-ahead
+    # when callers pass a live/unclosed current candle). Ensure ascending order.
+    candles_sorted = candles.sort_index() if hasattr(candles, "sort_index") else candles
+    closed_candles = candles_sorted
+    if current_time is not None:
+        try:
+            idx_times = pd.DatetimeIndex(candles_sorted.index).time
+            mask = [t < current_time for t in idx_times]
+            closed_candles = candles_sorted.loc[mask]
+        except Exception:
+            closed_candles = candles_sorted
+
+    if len(closed_candles) < 3:
+        return PatternSignal(False, "orb_breakout", 0.0, "")
+
+    or_candles = closed_candles.iloc[:3]
     or_high = float(or_candles["high"].max())
     or_low = float(or_candles["low"].min())
     or_mid = (or_high + or_low) / 2

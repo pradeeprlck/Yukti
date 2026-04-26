@@ -111,8 +111,21 @@ async def open_trade(
         await mark_abandoned(intent_id, f"entry_order_failed: {exc}")
         log.error("Entry order failed for %s (intent #%d): %s", symbol, intent_id, exc)
         return None
+    # Defensive handling: some Dhan responses use an envelope {status: 'ERROR', message: ...}
+    if isinstance(order_resp, dict) and str(order_resp.get("status", "")).upper() == "ERROR":
+        await mark_abandoned(intent_id, f"entry_order_api_error: {order_resp.get('message', order_resp)}")
+        log.error("Entry order API returned error for %s: %s", symbol, order_resp)
+        return None
 
-    order_id = order_resp.get("orderId") or order_resp.get("data", {}).get("orderId")
+    order_id = None
+    if isinstance(order_resp, dict):
+        order_id = order_resp.get("orderId") or (order_resp.get("data") or {}).get("orderId")
+    else:
+        # Some clients may return non-dict results; best-effort extraction
+        try:
+            order_id = getattr(order_resp, "orderId", None)
+        except Exception:
+            order_id = None
     if not order_id:
         await mark_abandoned(intent_id, f"no_order_id_in_response: {order_resp}")
         return None
@@ -286,7 +299,11 @@ async def _arm_gtts(
             order_type       = "SL-M",
             product_type     = product_type,
         )
-        sl_id = gtt_sl.get("gttOrderId") or gtt_sl.get("data", {}).get("gttOrderId")
+        if isinstance(gtt_sl, dict) and str(gtt_sl.get("status", "")).upper() == "ERROR":
+            return False, "", None, f"sl_gtt_api_error: {gtt_sl.get('message', gtt_sl)}"
+        sl_id = None
+        if isinstance(gtt_sl, dict):
+            sl_id = gtt_sl.get("gttOrderId") or (gtt_sl.get("data") or {}).get("gttOrderId")
         if not sl_id:
             return False, "", None, "sl_gtt_no_id_returned"
     except Exception as exc:
@@ -305,7 +322,10 @@ async def _arm_gtts(
                 product_type     = product_type,
                 price            = target_1,
             )
-            t1_id = gtt_t1.get("gttOrderId") or gtt_t1.get("data", {}).get("gttOrderId")
+            if isinstance(gtt_t1, dict) and str(gtt_t1.get("status", "")).upper() == "ERROR":
+                log.warning("Target GTT API error (non-fatal): %s", gtt_t1)
+            else:
+                t1_id = gtt_t1.get("gttOrderId") or (gtt_t1.get("data") or {}).get("gttOrderId")
         except Exception as exc:
             log.warning("Target GTT failed (non-fatal): %s", exc)
 

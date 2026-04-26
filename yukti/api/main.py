@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -170,23 +171,99 @@ def create_app() -> FastAPI:
                 return
 
         await manager.connect(websocket)
+        # Per-connection rate-limiting / backpressure state
+        setattr(websocket, "_last_msg_ts", 0.0)
         try:
             while True:
                 data = await websocket.receive_text()
-                msg  = json.loads(data)
-                if msg.get("type") == "halt":
+
+                # Basic protection: limit message size
+                max_bytes = getattr(settings, "ws_max_msg_bytes", 8192)
+                if len(data) > max_bytes:
+                    await websocket.send_json({"type": "error", "error": "message_too_large"})
+                    continue
+
+                # Simple per-connection rate limit (seconds between messages)
+                min_interval = getattr(settings, "ws_min_msg_interval", 0.2)
+                now = time.monotonic()
+                last = getattr(websocket, "_last_msg_ts", 0.0)
+                if now - last < min_interval:
+                    await websocket.send_json({"type": "error", "error": "rate_limited"})
+                    continue
+                websocket._last_msg_ts = now
+
+                # Parse and validate JSON
+                try:
+                    msg = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    await websocket.send_json({"type": "error", "error": "invalid_json"})
+                    log.debug("WS client sent invalid JSON: %s", exc)
+                    continue
+
+                msg_type = msg.get("type")
+                if msg_type == "halt":
                     from yukti.data.state import set_halt
                     await set_halt(True)
+                    # Audit log for WS-initiated halt
+                    try:
+                        import pathlib
+                        pathlib.Path("logs").mkdir(exist_ok=True)
+                        auth = websocket.headers.get("authorization") or websocket.headers.get("Authorization") or ""
+                        token = auth.split(" ", 1)[1] if auth and isinstance(auth, str) and " " in auth else None
+                        # Determine client host safely
+                        try:
+                            client = websocket.client
+                            if isinstance(client, tuple):
+                                client_host = client[0]
+                            else:
+                                client_host = getattr(client, "host", None)
+                        except Exception:
+                            client_host = None
+                        who = (f"bearer:{token[-4:]}" if token else (client_host or "unknown"))
+                        entry = {"when": datetime.utcnow().isoformat(), "action": "halt", "who": who, "from": client_host, "via": "websocket"}
+                        with open("logs/audit.log", "a") as af:
+                            af.write(json.dumps(entry) + "\n")
+                    except Exception:
+                        pass
                     await websocket.send_json({"type": "ack", "halted": True})
-                elif msg.get("type") == "resume":
+                elif msg_type == "resume":
                     from yukti.data.state import set_halt
                     await set_halt(False)
+                    # Audit log for WS-initiated resume
+                    try:
+                        import pathlib
+                        pathlib.Path("logs").mkdir(exist_ok=True)
+                        auth = websocket.headers.get("authorization") or websocket.headers.get("Authorization") or ""
+                        token = auth.split(" ", 1)[1] if auth and isinstance(auth, str) and " " in auth else None
+                        try:
+                            client = websocket.client
+                            if isinstance(client, tuple):
+                                client_host = client[0]
+                            else:
+                                client_host = getattr(client, "host", None)
+                        except Exception:
+                            client_host = None
+                        who = (f"bearer:{token[-4:]}" if token else (client_host or "unknown"))
+                        entry = {"when": datetime.utcnow().isoformat(), "action": "resume", "who": who, "from": client_host, "via": "websocket"}
+                        with open("logs/audit.log", "a") as af:
+                            af.write(json.dumps(entry) + "\n")
+                    except Exception:
+                        pass
                     await websocket.send_json({"type": "ack", "halted": False})
-                elif msg.get("type") == "ping":
+                elif msg_type == "ping":
                     await websocket.send_json({"type": "pong"})
+                else:
+                    await websocket.send_json({"type": "error", "error": "unknown_message_type"})
         except WebSocketDisconnect:
-            manager.disconnect(websocket)
+            await manager.disconnect(websocket)
             log.info("WS client disconnected (remaining=%d)", len(manager._active))
+        except Exception as exc:
+            # Unexpected error for this connection — ensure clean disconnect
+            log.warning("WS connection error: %s", exc)
+            try:
+                await manager.disconnect(websocket)
+            except Exception:
+                pass
 
     # ── Serve React SPA ────────────────────────────────────────────────────────
     # The webapp is built with `npm run build` inside webapp/ which outputs

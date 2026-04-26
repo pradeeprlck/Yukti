@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Optional
+from decimal import Decimal, ROUND_HALF_UP
 
 from yukti.agents.arjun import TradeDecision
 
@@ -22,11 +23,11 @@ class PositionResult:
     quantity:              int
     base_quantity:         int
     conviction_multiplier: float
-    risk_amount:           float   # ₹ risked
-    stop_distance:         float   # ₹ per share
-    max_loss:              float   # ₹ total max loss
-    capital_deployed:      float   # ₹ notional
-    capital_pct:           float   # % of account deployed
+    risk_amount:           Decimal   # ₹ risked
+    stop_distance:         Decimal   # ₹ per share
+    max_loss:              Decimal   # ₹ total max loss
+    capital_deployed:      Decimal   # ₹ notional
+    capital_pct:           Decimal   # % of account deployed
 
 
 def calculate_position(
@@ -52,42 +53,47 @@ def calculate_position(
          5-6 → 0.5×   (tentative — half size)
          1-4 → 0.0×   (should have been SKIPped; safe guard)
     """
-    acct  = account_value or settings.account_value
-    rpct  = risk_pct or settings.risk_pct
+    acct  = Decimal(str(account_value or settings.account_value))
+    rpct  = Decimal(str(risk_pct or settings.risk_pct))
 
     risk_amount = acct * rpct
 
+    entry_d = Decimal(str(entry_price))
+    stop_d  = Decimal(str(stop_loss))
     stop_dist = (
-        entry_price - stop_loss if direction == "LONG"
-        else stop_loss - entry_price
+        entry_d - stop_d if direction == "LONG"
+        else stop_d - entry_d
     )
 
-    if stop_dist <= 0:
+    if stop_dist <= Decimal("0"):
         raise ValueError(
             f"Invalid stop: {direction} entry={entry_price} sl={stop_loss}"
         )
 
     base_qty = int(risk_amount / stop_dist)
 
-    mult_map = {(9, 10): 1.5, (7, 8): 1.0, (5, 6): 0.5}
-    mult = 0.0
+    mult_map = {(9, 10): Decimal("1.5"), (7, 8): Decimal("1.0"), (5, 6): Decimal("0.5")}
+    # fallback multiplier as Decimal
+    mult = Decimal("0.0")
     for (lo, hi), m in mult_map.items():
         if lo <= conviction <= hi:
             mult = m
             break
 
-    final_qty   = int(base_qty * mult)
-    capital_dep = final_qty * entry_price
+    final_qty   = int(Decimal(base_qty) * mult)
+    capital_dep = Decimal(final_qty) * entry_d
+
+    quant = Decimal("0.01")
 
     return PositionResult(
         quantity              = final_qty,
         base_quantity         = base_qty,
-        conviction_multiplier = mult,
-        risk_amount           = round(risk_amount, 2),
-        stop_distance         = round(stop_dist, 2),
-        max_loss              = round(final_qty * stop_dist, 2),
-        capital_deployed      = round(capital_dep, 2),
-        capital_pct           = round(capital_dep / acct * 100, 2),
+        conviction_multiplier = float(mult),
+        risk_amount           = (risk_amount).quantize(quant, rounding=ROUND_HALF_UP),
+        stop_distance         = (stop_dist).quantize(quant, rounding=ROUND_HALF_UP),
+        max_loss              = (Decimal(final_qty) * stop_dist).quantize(quant, rounding=ROUND_HALF_UP),
+        capital_deployed      = (capital_dep).quantize(quant, rounding=ROUND_HALF_UP),
+        capital_pct           = (capital_dep / acct * Decimal("100")).quantize(quant, rounding=ROUND_HALF_UP),
     )
 
 
@@ -97,11 +103,11 @@ def calculate_position(
 
 @dataclass
 class Levels:
-    stop_loss:     float
-    stop_distance: float
-    target_1:      float
-    target_2:      float
-    risk_reward:   float
+    stop_loss:     Decimal
+    stop_distance: Decimal
+    target_1:      Decimal
+    target_2:      Decimal
+    risk_reward:   Decimal
     entry_quality: str    # "GOOD" | "WIDE_STOP"
 
 
@@ -126,34 +132,37 @@ def calculate_levels(
       t1   = entry - 2.0 × stop_dist
       t2   = entry - 3.0 × stop_dist
     """
-    atr_m = settings.atr_multiplier
+    atr_m = Decimal(str(settings.atr_multiplier))
+    entry_d = Decimal(str(entry_price))
+    atr_d = Decimal(str(atr))
 
     if direction == "LONG":
-        atr_sl    = entry_price - atr * atr_m
-        swing_sl  = swing_low * 0.995  if swing_low  else atr_sl
+        atr_sl    = entry_d - atr_d * atr_m
+        swing_sl  = Decimal(str(swing_low)) * Decimal("0.995") if swing_low  else atr_sl
         sl        = max(atr_sl, swing_sl)
-        stop_dist = entry_price - sl
-        t1 = round(entry_price + stop_dist * target_rr[0], 2)
-        t2 = round(entry_price + stop_dist * target_rr[1], 2)
+        stop_dist = entry_d - sl
+        t1 = (entry_d + stop_dist * Decimal(str(target_rr[0]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        t2 = (entry_d + stop_dist * Decimal(str(target_rr[1]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     else:
-        atr_sl    = entry_price + atr * atr_m
-        swing_sl  = swing_high * 1.005 if swing_high else atr_sl
+        atr_sl    = entry_d + atr_d * atr_m
+        swing_sl  = Decimal(str(swing_high)) * Decimal("1.005") if swing_high else atr_sl
         sl        = min(atr_sl, swing_sl)
-        stop_dist = sl - entry_price
-        t1 = round(entry_price - stop_dist * target_rr[0], 2)
-        t2 = round(entry_price - stop_dist * target_rr[1], 2)
+        stop_dist = sl - entry_d
+        t1 = (entry_d - stop_dist * Decimal(str(target_rr[0]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        t2 = (entry_d - stop_dist * Decimal(str(target_rr[1]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    if stop_dist <= 0:
+    if stop_dist <= Decimal("0"):
         raise ValueError(f"Computed stop distance is {stop_dist} — bad entry")
 
-    quality = "WIDE_STOP" if stop_dist > atr * settings.max_atr_multiplier else "GOOD"
+    quality = "WIDE_STOP" if stop_dist > atr_d * Decimal(str(settings.max_atr_multiplier)) else "GOOD"
 
+    quant = Decimal("0.01")
     return Levels(
-        stop_loss     = round(sl, 2),
-        stop_distance = round(stop_dist, 2),
+        stop_loss     = (sl).quantize(quant, rounding=ROUND_HALF_UP),
+        stop_distance = (stop_dist).quantize(quant, rounding=ROUND_HALF_UP),
         target_1      = t1,
         target_2      = t2,
-        risk_reward   = round(target_rr[0], 2),
+        risk_reward   = Decimal(str(target_rr[0])).quantize(quant, rounding=ROUND_HALF_UP),
         entry_quality = quality,
     )
 

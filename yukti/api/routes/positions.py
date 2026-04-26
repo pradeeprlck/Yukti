@@ -178,6 +178,25 @@ async def agent_status() -> dict[str, Any]:
 async def halt(req: HaltRequest, request: Request) -> dict[str, Any]:
     _authorize_control(request)
     await set_halt(True)
+    # Audit log: who, when, from where
+    try:
+        import pathlib
+        pathlib.Path("logs").mkdir(exist_ok=True)
+        auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+        token = auth.split(" ", 1)[1] if auth and isinstance(auth, str) and " " in auth else None
+        who = (f"bearer:{token[-4:]}" if token else request.client.host if request.client else "unknown")
+        entry = {
+            "when": datetime.utcnow().isoformat(),
+            "action": "halt",
+            "who": who,
+            "from": request.client.host if request.client else None,
+            "reason": req.reason,
+        }
+        with open("logs/audit.log", "a") as af:
+            af.write(json.dumps(entry) + "\n")
+        log.info("AUDIT halt by %s from %s reason=%s", who, request.client.host if request.client else "-", req.reason)
+    except Exception as exc:
+        log.debug("Audit log write failed: %s", exc)
     return {"halted": True, "reason": req.reason}
 
 
@@ -185,6 +204,19 @@ async def halt(req: HaltRequest, request: Request) -> dict[str, Any]:
 async def resume(request: Request) -> dict[str, Any]:
     _authorize_control(request)
     await set_halt(False)
+    # Audit log
+    try:
+        import pathlib
+        pathlib.Path("logs").mkdir(exist_ok=True)
+        auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+        token = auth.split(" ", 1)[1] if auth and isinstance(auth, str) and " " in auth else None
+        who = (f"bearer:{token[-4:]}" if token else request.client.host if request.client else "unknown")
+        entry = {"when": datetime.utcnow().isoformat(), "action": "resume", "who": who, "from": request.client.host if request.client else None}
+        with open("logs/audit.log", "a") as af:
+            af.write(json.dumps(entry) + "\n")
+        log.info("AUDIT resume by %s from %s", who, request.client.host if request.client else "-")
+    except Exception as exc:
+        log.debug("Audit log write failed: %s", exc)
     return {"halted": False}
 
 
@@ -210,6 +242,26 @@ async def squareoff_all(request: Request) -> dict[str, Any]:
             results.append({"symbol": symbol, "ok": True})
         except Exception as exc:
             results.append({"symbol": symbol, "ok": False, "error": str(exc)})
+
+    # Audit log for squareoff: who, when, from where, summary
+    try:
+        import pathlib
+        pathlib.Path("logs").mkdir(exist_ok=True)
+        auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+        token = auth.split(" ", 1)[1] if auth and isinstance(auth, str) and " " in auth else None
+        who = (f"bearer:{token[-4:]}" if token else request.client.host if request.client else "unknown")
+        entry = {
+            "when": datetime.utcnow().isoformat(),
+            "action": "squareoff",
+            "who": who,
+            "from": request.client.host if request.client else None,
+            "summary": {"requested": len(positions), "completed": sum(1 for r in results if r.get("ok")), "results": results},
+        }
+        with open("logs/audit.log", "a") as af:
+            af.write(json.dumps(entry) + "\n")
+        log.info("AUDIT squareoff by %s from %s: %d completed", who, request.client.host if request.client else "-", sum(1 for r in results if r.get("ok")))
+    except Exception as exc:
+        log.debug("Audit log write failed: %s", exc)
 
     return {"halted": True, "results": results}
 

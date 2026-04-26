@@ -547,21 +547,24 @@ class CanaryRouterProvider(BaseProvider):
         try:
             from yukti.metrics import canary_requests
             self._metrics_canary_requests = canary_requests
-        except Exception:
+        except Exception as exc:
+            log.debug("Canary metrics import failed: %s", exc)
             self._metrics_canary_requests = None
 
     async def call(self, context: str) -> tuple[TradeDecision, CallMeta]:
         # Decide whether to route to canary
         try:
             from yukti.agents import canary as canary_mod
-        except Exception:
+        except Exception as exc:
+            log.debug("Failed to import canary module: %s", exc)
             canary_mod = None
 
         route_canary = False
         if canary_mod is not None:
             try:
                 route_canary = await canary_mod.should_route_to_canary()
-            except Exception:
+            except Exception as exc:
+                log.debug("canary.should_route_to_canary() error: %s", exc)
                 route_canary = False
 
         if route_canary:
@@ -569,28 +572,29 @@ class CanaryRouterProvider(BaseProvider):
             try:
                 from yukti.metrics import canary_requests
                 canary_requests.inc()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Failed to increment canary_requests metric: %s", exc)
 
             try:
                 canary_path = await canary_mod.get_active_canary() if canary_mod is not None else None
-                if canary_path:
-                    # Lazy import to avoid circular imports
-                    try:
-                        from yukti.agents.local_adapter import LocalAdapterProvider
-                        if self._canary_provider is None or self._canary_path != canary_path:
-                            self._canary_provider = LocalAdapterProvider(
-                                adapter_dir=canary_path,
-                                base_model=getattr(settings, "canary_base_model", None),
-                                device=getattr(settings, "canary_device", "cpu"),
-                            )
-                            self._canary_path = canary_path
-                        return await self._canary_provider.call(context)
-                    except Exception:
-                        # fall through to primary on any canary failure
-                        pass
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Failed to get active canary path: %s", exc)
+                canary_path = None
+
+            if canary_path:
+                # Lazy import to avoid circular imports
+                try:
+                    from yukti.agents.local_adapter import LocalAdapterProvider
+                    if self._canary_provider is None or self._canary_path != canary_path:
+                        self._canary_provider = LocalAdapterProvider(
+                            adapter_dir=canary_path,
+                            base_model=getattr(settings, "canary_base_model", None),
+                            device=getattr(settings, "canary_device", "cpu"),
+                        )
+                        self._canary_path = canary_path
+                    return await self._canary_provider.call(context)
+                except Exception as exc:
+                    log.debug("Canary adapter load/call failed, falling back to primary: %s", exc)
 
         # Default: call primary provider
         return await self._primary.call(context)
@@ -632,7 +636,8 @@ class CanaryRouterProvider(BaseProvider):
         """Wait for secondary result and log any disagreement."""
         try:
             secondary_decision, secondary_meta = await secondary_task
-        except Exception:
+        except Exception as exc:
+            log.debug("Secondary provider task failed: %s", exc)
             return
 
         log.debug(
@@ -826,8 +831,8 @@ class Arjun:
             from yukti.metrics import claude_latency, claude_cost_usd, claude_errors
             claude_latency.observe(meta.latency_ms / 1000)
             claude_cost_usd.inc(meta.cost_usd)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Prometheus metric update failed: %s", exc)
 
         return decision, meta
 
@@ -844,8 +849,8 @@ class Arjun:
             try:
                 from yukti.metrics import claude_errors
                 claude_errors.inc()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Failed to increment claude_errors metric: %s", exc)
             return TradeDecision(
                 symbol     = "UNKNOWN",
                 action     = "SKIP",

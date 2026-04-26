@@ -99,7 +99,11 @@ async def recover_from_crash() -> dict[str, int]:
                 order_type       = "SL-M",
                 product_type     = product_type,
             )
-            sl_id = sl_gtt.get("gttOrderId") or sl_gtt.get("data", {}).get("gttOrderId")
+            if isinstance(sl_gtt, dict) and str(sl_gtt.get("status", "")).upper() == "ERROR":
+                raise RuntimeError(f"sl_gtt_api_error: {sl_gtt.get('message', sl_gtt)}")
+            sl_id = sl_gtt.get("gttOrderId") or (sl_gtt.get("data") or {}).get("gttOrderId")
+            if not sl_id:
+                raise RuntimeError(f"sl_gtt_no_id_returned: {sl_gtt}")
 
             t1_gtt = await dhan.place_gtt(
                 security_id      = intent.security_id,
@@ -110,7 +114,11 @@ async def recover_from_crash() -> dict[str, int]:
                 product_type     = product_type,
                 price            = intent.target_1,
             )
-            t1_id = t1_gtt.get("gttOrderId") or t1_gtt.get("data", {}).get("gttOrderId")
+            if isinstance(t1_gtt, dict) and str(t1_gtt.get("status", "")).upper() == "ERROR":
+                raise RuntimeError(f"t1_gtt_api_error: {t1_gtt.get('message', t1_gtt)}")
+            t1_id = t1_gtt.get("gttOrderId") or (t1_gtt.get("data") or {}).get("gttOrderId")
+            if not t1_id:
+                raise RuntimeError(f"t1_gtt_no_id_returned: {t1_gtt}")
 
             await mark_armed(intent.id, sl_id, t1_id)
 
