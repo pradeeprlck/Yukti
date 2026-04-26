@@ -136,14 +136,33 @@ fi
 # Print estimated cost guidance
 cat <<COST
 
-Estimated example costs (April 2026):
-- Vast.ai (spot-style): 1× A100 40GB ~ ₹600-₹1200 / hour (spot), good for QLoRA on 7B/13B - expect ₹600-₹1800 per 1-3 hour job depending on model + data.
-- RunPod (on-demand GPU): 1× A100 40GB ~ ₹900-₹2000 / hour.
-- E2E Networks: similar pricing; check hourly spot offerings.
+Estimated example costs (April 2026) and quickstarts:
 
-Practical plan within budget (₹2000/month):
-- Run QLoRA/QLoRA-style fine-tune 1-2× month on a 7B model: use 1-2 hours per run on A100 40GB (₹700-₹1500/hr) → ₹1400-₹3000 (may exceed budget if run often).
-- To stay < ₹2000: prefer smaller models (opt-125m / 350m) or use shorter runs (1 hour), and only train when you have >=50 high-quality journals.
+Vast.ai (spot style):
+- Typical GPU: A100-40GB or 80GB (spot); price range: ~₹500–₹1,400/hr depending on spot availability and region.
+- Quickstart:
+  1) Create an account on Vast.ai and search for an "A100 40GB" instance with Ubuntu 22.04.
+  2) Choose a 1–2 hour lease to control cost, set SSH key, and deploy.
+  3) Upload `yukti_trainer_package.tar.gz` via `scp` or `curl` from object storage.
+  4) Run the commands printed by this script (install deps, preprocess, train).
+
+RunPod (on-demand):
+- Typical GPU: A100 / 4090; price range: ~₹700–₹1,800/hr on-demand.
+- Quickstart:
+  1) Create a RunPod account and spin up a pod with Ubuntu and the desired GPU (choose 4GB+ VRAM based on model).
+  2) Use `scp` or upload the tarball to the pod. Run the same commands below.
+
+E2E Networks (or similar providers):
+- Price range and offerings vary; check spot/discounted options. Use 1-hour runs to cap cost.
+
+Practical per-run budget guidance (aim: ≤ ₹1,000):
+- To reliably stay under ₹1,000 per run, prefer smaller base models (e.g., `facebook/opt-125m`, `opt-350m`, or `Llama2-7B` with small-adapter approaches) or run very short jobs (30–60 minutes) on larger GPUs.
+- QLoRA on 7B/13B on an A100 will often exceed ₹1,000 if run >1 hour. Use those only when you have many (>500) high-quality examples or for infrequent monthly runs.
+
+Cost-optimized plan examples:
+- Low-cost fine-tune (recommended): `opt-125m` or `opt-350m` on a cheap 1-2 hour slot — expected ≈ ₹150–₹600.
+- Medium: QLoRA on a 7B model for 1 hour on A100-40GB — expected ≈ ₹600–₹1,200 (spot-dependent).
+- Heavy: 13B+ for several hours — likely > ₹1,500 and not recommended within the ₹2,000/month budget.
 
 COST
 

@@ -409,12 +409,15 @@ async def retrieve_similar_hybrid(
     - Diverse results: avoid too many similar losing trades
     - Returns metadata including similarity score and why selected
     """
+    # Load configuration
     config = _get_rag_config()
-    max_retrieved = top_k or config["max_retrieved"]
-    min_quality = config["min_quality_score"]
-    recency_days = config["recency_days"]
-    outcome_weight = config["outcome_weight"]
-    
+    max_retrieved = top_k or config.get("max_retrieved", 4)
+    min_quality = config.get("min_quality_score", 6.0)
+    recency_days = config.get("recency_days", 90)
+    outcome_weight = config.get("outcome_weight", 0.15)
+    recent_half_life = getattr(settings, "rag_recency_half_life_days", 365)
+    max_fetch = getattr(settings, "rag_max_fetch_candidates", max_retrieved * 10)
+
     from yukti.data.database import get_db
 
     query_text = f"{symbol} {direction} {setup_type} equity trade NSE"
@@ -424,42 +427,27 @@ async def retrieve_similar_hybrid(
         [query_emb] = await _embed([query_text], input_type="query")
     except Exception as exc:
         log.warning("Hybrid retrieval embedding failed: %s", exc)
-        rag_retrieval_count.inc()
+        try:
+            rag_retrieval_count.inc()
+        except Exception:
+            pass
         return []
 
-    # Calculate recency cutoff
     recency_cutoff = datetime.utcnow() - timedelta(days=recency_days)
 
-    # SQL with hybrid scoring: vector similarity + outcome weight + recency decay
+    # Fetch candidate set (vector-nearest), then compute final score in Python
     sql = sa_text("""
-        WITH base_results AS (
-            SELECT 
-                id, trade_id, symbol, setup_type, direction, pnl_pct,
-                entry_text, setup_summary, outcome, reason, 
-                one_actionable_lesson, quality_score, market_regime,
-                is_high_conviction, created_at,
-                1 - (embedding <=> :emb ::vector) AS base_similarity
-            FROM journal_entries
-            WHERE embedding IS NOT NULL
-              AND created_at >= :recency_cutoff
-              AND (quality_score IS NULL OR quality_score >= :min_quality)
-        )
         SELECT 
             id, trade_id, symbol, setup_type, direction, pnl_pct,
             entry_text, setup_summary, outcome, reason,
             one_actionable_lesson, quality_score, market_regime,
             is_high_conviction, created_at,
-            base_similarity,
-            -- Outcome weight: winning trades get a boost
-            CASE 
-                WHEN outcome = 'WIN' THEN base_similarity + :outcome_weight
-                WHEN outcome = 'LOSS' THEN base_similarity - (:outcome_weight * 0.5)
-                ELSE base_similarity
-            END AS weighted_similarity,
-            -- Recency decay: ~2% per week
-            EXTRACT(EPOCH FROM (now() - created_at)) / 604800.0 AS weeks_old
-        FROM base_results
-        ORDER BY weighted_similarity DESC, base_similarity DESC
+            1 - (embedding <=> :emb ::vector) AS base_similarity
+        FROM journal_entries
+        WHERE embedding IS NOT NULL
+          AND (discarded IS NULL OR discarded = FALSE)
+          AND created_at >= :recency_cutoff
+        ORDER BY embedding <=> :emb ::vector
         LIMIT :limit
     """)
 
@@ -468,104 +456,130 @@ async def retrieve_similar_hybrid(
             rows = (await db.execute(sql, {
                 "emb": str(query_emb),
                 "recency_cutoff": recency_cutoff,
-                "min_quality": min_quality,
-                "outcome_weight": outcome_weight,
-                "limit": max_retrieved * 2,  # Get more for diversity filtering
+                "limit": max_fetch,
             })).fetchall()
 
-        # Apply diversity filtering: ensure mix of WIN/LOSS outcomes
-        results: list[RetrievedJournal] = []
-        seen_outcomes = {"WIN": 0, "LOSS": 0, "BREAKEVEN": 0}
-        max_same_outcome = 2  # Max 2 from same outcome category
+        now = datetime.utcnow()
+        candidates: list[tuple[float, float, Any]] = []  # (final_score, base_sim, row)
 
         for row in rows:
-            if len(results) >= max_retrieved:
+            try:
+                base_sim = float(getattr(row, "base_similarity", 0.0) or 0.0)
+                qscore = float(getattr(row, "quality_score", 0.0) or 0.0)
+                created_at = getattr(row, "created_at", None) or now
+                age_days = max(0.0, (now - created_at).days)
+
+                # recency decay via half-life
+                decay = 0.5 ** (age_days / max(1.0, recent_half_life))
+
+                # Outcome multiplier
+                pnl = float(getattr(row, "pnl_pct", 0.0) or 0.0)
+                is_win = pnl > 0
+                outcome_mul = 1.0 + (outcome_weight if is_win else -outcome_weight * 0.5)
+
+                # Symbol / regime boost
+                symbol_bonus = 1.25 if (getattr(row, "symbol", "") or "") == symbol else 1.0
+                regime_bonus = 1.10 if (market_regime and (getattr(row, "market_regime", None) == market_regime)) else 1.0
+
+                # Quality multiplier (0.5..1.0+)
+                quality_mul = max(0.5, (qscore / 10.0) if qscore > 0 else 0.5)
+
+                final_score = base_sim * outcome_mul * symbol_bonus * regime_bonus * decay * quality_mul
+
+                candidates.append((final_score, base_sim, row))
+            except Exception:
+                continue
+
+        if not candidates:
+            try:
+                rag_retrieval_count.inc()
+            except Exception:
+                pass
+            return []
+
+        # sort by final_score desc
+        candidates.sort(key=lambda t: t[0], reverse=True)
+
+        # Diversity selection: prefer mix of outcomes and at least one win when available
+        selected: list[RetrievedJournal] = []
+        outcome_counts = {"WIN": 0, "LOSS": 0, "BREAKEVEN": 0}
+        max_same_outcome = min(2, max_retrieved)
+
+        # First pass: try to include top winners if available
+        wins_available = [c for c in candidates if (getattr(c[2], "pnl_pct", 0) or 0) > 0]
+
+        for score, base_sim, row in candidates:
+            if len(selected) >= max_retrieved:
                 break
-                
-            outcome = row.outcome or ("WIN" if row.pnl_pct > 0 else "LOSS")
-            
-            # Diversity check
-            if seen_outcomes.get(outcome, 0) >= max_same_outcome:
-                # Allow if it's a high-quality or high-conviction trade
-                if not (row.is_high_conviction or (row.quality_score and row.quality_score >= 8)):
+
+            outcome = (getattr(row, "outcome", None) or ("WIN" if (getattr(row, "pnl_pct", 0) or 0) > 0 else "LOSS"))
+
+            # enforce diversity cap
+            if outcome_counts.get(outcome, 0) >= max_same_outcome:
+                # allow if very high quality or high conviction
+                if not (getattr(row, "is_high_conviction", False) or (getattr(row, "quality_score", 0) or 0) >= 8):
                     continue
-            
-            seen_outcomes[outcome] = seen_outcomes.get(outcome, 0) + 1
 
-            # Build why_selected explanation
-            why_parts = []
-            why_parts.append(f"similarity={row.base_similarity:.2f}")
-            if outcome == "WIN":
-                why_parts.append("winning trade")
-            if row.is_high_conviction:
-                why_parts.append("high conviction")
-            if row.quality_score and row.quality_score >= 8:
-                why_parts.append(f"quality={row.quality_score:.1f}")
-            if row.market_regime == market_regime:
-                why_parts.append(f"same regime={market_regime}")
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
 
-            weeks_old = row.weeks_old or 0
-            if weeks_old < 2:
-                why_parts.append("recent")
-
-            retrieved = RetrievedJournal(
-                trade_id=row.trade_id,
-                symbol=row.symbol,
-                setup_type=row.setup_type,
-                direction=row.direction,
-                pnl_pct=row.pnl_pct,
-                entry_text=row.entry_text,
-                setup_summary=row.setup_summary,
-                outcome=outcome,
-                reason=row.reason,
-                one_actionable_lesson=row.one_actionable_lesson,
-                quality_score=row.quality_score,
-                market_regime=row.market_regime,
-                is_high_conviction=row.is_high_conviction,
-                similarity=row.base_similarity,
-                created_at=row.created_at,
-                why_selected=", ".join(why_parts) if why_parts else "vector match",
+            # build RetrievedJournal
+            r = RetrievedJournal(
+                trade_id = getattr(row, "trade_id", None),
+                symbol = getattr(row, "symbol", None),
+                setup_type = getattr(row, "setup_type", None),
+                direction = getattr(row, "direction", None),
+                pnl_pct = float(getattr(row, "pnl_pct", 0.0) or 0.0),
+                entry_text = getattr(row, "entry_text", "") or "",
+                setup_summary = getattr(row, "setup_summary", None),
+                outcome = outcome,
+                reason = getattr(row, "reason", None),
+                one_actionable_lesson = getattr(row, "one_actionable_lesson", None) or getattr(row, "key_lesson", None),
+                quality_score = getattr(row, "quality_score", None),
+                market_regime = getattr(row, "market_regime", None),
+                is_high_conviction = bool(getattr(row, "is_high_conviction", False)),
+                similarity = float(base_sim),
+                created_at = getattr(row, "created_at", now) or now,
+                why_selected = (
+                    f"final_score={score:.3f}, base_sim={base_sim:.2f}, outcome_mul={('+' if (getattr(row,'pnl_pct',0) or 0)>0 else '-')}{outcome_weight}, "
+                    f"decay={decay:.3f}, quality={getattr(row,'quality_score',0)}"
+                ),
             )
-            results.append(retrieved)
+            selected.append(r)
 
-        if results:
-            top_sim = results[0].similarity
-            top_outcome = results[0].outcome
-            top_lesson = results[0].one_actionable_lesson or "N/A"
-            log.info(
-                "Retrieved %d past journals. Top match similarity: %.2f | Outcome: %s | Lesson: %s",
-                len(results), top_sim, top_outcome, top_lesson[:50]
-            )
+        # Trim to requested max_retrieved
+        selected = selected[:max_retrieved]
+
+        # Metrics and logging
+        try:
             rag_retrieval_count.inc()
-            # record averages to Gauges
-            rag_avg_similarity.set(sum(r.similarity for r in results) / len(results))
-            if any(r.quality_score for r in results):
-                avg_qual = sum(r.quality_score for r in results if r.quality_score) / len(results)
-                rag_quality_score_avg.set(avg_qual)
-            # Count retrieved wins and emit metric
-            wins = sum(1 for r in results if (r.outcome or '').upper() == 'WIN' or (r.pnl_pct or 0) > 0)
-            try:
-                rag_retrieved_wins.inc(wins)
-            except Exception:
-                pass
-            # Structured log for observability
-            try:
-                log.info(json.dumps({
-                    "event": "rag_retrieval",
-                    "symbol": symbol,
-                    "setup_type": setup_type,
-                    "retrieved_count": len(results),
-                    "avg_similarity": sum(r.similarity for r in results) / len(results),
-                    "avg_quality": avg_qual if any(r.quality_score for r in results) else None,
-                    "wins": wins,
-                    "top_match": results[0].trade_id if results else None,
-                }))
-            except Exception:
-                pass
-        else:
-            rag_retrieval_count.inc()
-            
-        return results
+            if selected:
+                rag_avg_similarity.set(sum(r.similarity for r in selected) / len(selected))
+                qvals = [r.quality_score for r in selected if r.quality_score is not None]
+                if qvals:
+                    rag_quality_score_avg.set(sum(qvals) / len(qvals))
+                wins = sum(1 for r in selected if (r.outcome or '').upper() == 'WIN' or (r.pnl_pct or 0) > 0)
+                try:
+                    rag_retrieved_wins.inc(wins)
+                except Exception:
+                    pass
+                # structured logging
+                try:
+                    log.info(json.dumps({
+                        "event": "rag_retrieval",
+                        "symbol": symbol,
+                        "setup_type": setup_type,
+                        "retrieved_count": len(selected),
+                        "avg_similarity": sum(r.similarity for r in selected) / len(selected),
+                        "avg_quality": (sum(qvals) / len(qvals)) if qvals else None,
+                        "wins": wins,
+                        "top_match_trade_id": selected[0].trade_id if selected else None,
+                    }))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        return selected
 
     except Exception as exc:
         log.warning("Hybrid retrieval DB query failed: %s", exc)
