@@ -389,6 +389,103 @@ docker compose exec postgres psql -U yukti -d yukti -c "
 - **Bandwidth:** Free (5TB/month)
 - **Total:** ~$7/month
 
+## Option 3: Google Cloud Platform ($300 trial credit)
+
+### Why GCP
+
+- $300 credit lasts ~5 months on an e2-small in Mumbai
+- asia-south1 (Mumbai) gives lowest latency to NSE
+- No credit card charge until credits expire and you opt in
+
+### 3a. Create the VM
+
+**Via CLI (recommended):**
+
+```bash
+# Install gcloud CLI: https://cloud.google.com/sdk/docs/install
+
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+
+# Create VM — e2-small in Mumbai
+gcloud compute instances create yukti \
+    --machine-type e2-small \
+    --zone asia-south1-a \
+    --image-family ubuntu-2204-lts \
+    --image-project ubuntu-os-cloud \
+    --boot-disk-size 20GB \
+    --tags yukti
+
+# Open port 8000 for the web portal
+gcloud compute firewall-rules create yukti-web \
+    --allow tcp:8000 \
+    --target-tags yukti \
+    --source-ranges 0.0.0.0/0 \
+    --description "Allow Yukti web portal"
+```
+
+**Via Console:**
+
+1. Go to https://console.cloud.google.com/compute/instances
+2. Click **Create Instance**
+3. Name: `yukti`
+4. Region: `asia-south1 (Mumbai)`, Zone: `asia-south1-a`
+5. Machine type: `e2-small` (2 vCPU, 2 GB)
+6. Boot disk: Ubuntu 22.04 LTS, 20 GB balanced
+7. Firewall: Allow HTTP traffic
+8. Click Create
+
+### 3b. SSH and bootstrap
+
+```bash
+# SSH via gcloud (easiest — no key management)
+gcloud compute ssh yukti --zone asia-south1-a
+
+# Download and run bootstrap
+curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/yukti/main/deploy/gcp-bootstrap.sh -o gcp-bootstrap.sh
+GITHUB_REPO=YOUR_USERNAME/yukti bash gcp-bootstrap.sh
+```
+
+### 3c. Configure and start
+
+```bash
+cd ~/yukti
+
+# Edit .env with your API keys
+nano .env
+
+# Start the full stack
+docker compose up -d
+
+# Watch startup logs
+docker compose logs -f yukti
+```
+
+### 3d. Budget alert (important!)
+
+Set a budget alert so you don't accidentally burn through credits:
+
+1. Go to **Billing → Budgets & alerts**
+2. Create budget: $50/month
+3. Set alert thresholds at 50%, 80%, 100%
+4. Connect to email notifications
+
+### GCP cost breakdown
+
+| Resource | Monthly cost | Notes |
+|---|---|---|
+| e2-small (2 vCPU, 2 GB) | ~$15 | 730 hrs × $0.021/hr |
+| 20 GB balanced disk | ~$2 | $0.10/GB/month |
+| Network egress | ~$1 | Minimal (API calls + web portal) |
+| **Total** | **~$18/month** | **$300 credit ≈ 16 months** |
+
+> Note: GCP free trial is 90 days. After that, remaining credit expires.
+> Actual runway: **~5 months of runtime within the 90-day window.**
+> To continue after trial: upgrade to e2-micro ($7/month) or migrate to
+> Oracle Cloud free tier (see `deploy/oracle-bootstrap.sh`).
+
+
+
 Cloud spend: $0 (unless you add load balancer / extra storage).
 
 API spend:
