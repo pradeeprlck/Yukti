@@ -62,11 +62,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (for ARM64 cross-build)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -86,22 +81,16 @@ jobs:
             type=sha,prefix=main-,format=short
             type=raw,value=latest,enable=true
 
-      - name: Build and push (multi-arch: amd64 + arm64)
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          # linux/amd64 for local dev; linux/arm64 for Oracle A1 free tier
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Separate cache keys per platform to avoid cross-arch cache poisoning
-          cache-from: |
-            type=gha,scope=amd64
-            type=gha,scope=arm64
-          cache-to: |
-            type=gha,scope=amd64,mode=max
-            type=gha,scope=arm64,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # ── SSH deploy to VPS ─────────────────────────────────────────────────────
   deploy:
