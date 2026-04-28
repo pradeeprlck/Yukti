@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Yukti
+    orgId: 1
+    folder: Yukti
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

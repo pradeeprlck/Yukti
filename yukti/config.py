@@ -6,10 +6,10 @@ Reads from .env file or Doppler-injected environment.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     dhan_sandbox_access_token: str = ""
     dhan_sandbox_base_url: str = "https://sandbox.dhan.co/v2"
 
-    watchlist: list[str] = Field(default_factory=list)
+    watchlist: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ── AI provider ───────────────────────────────────
     # "claude"  → Anthropic Claude Sonnet 4.6  ($3/$15 per MTok)
@@ -180,6 +180,8 @@ class Settings(BaseSettings):
     @field_validator("watchlist", mode="before")
     @classmethod
     def split_watchlist(cls, v: str | list[str]) -> list[str]:
+        if v in (None, ""):
+            return []
         if isinstance(v, str):
             return [s.strip().upper() for s in v.split(",") if s.strip()]
         return [s.upper() for s in v]

@@ -8,16 +8,19 @@ RUN npm run build
 # Output: /webapp/dist (vite.config.ts outDir set to yukti/api/static in build)
 
 # ── Stage 2: Python trading agent ─────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.12-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libpq-dev curl && rm -rf /var/lib/apt/lists/*
 RUN curl -Ls https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
+ENV UV_PYTHON=python3.12
 COPY pyproject.toml .
-RUN uv sync --frozen
+COPY uv.lock .
+COPY README.md .
 COPY yukti/ ./yukti/
 COPY scripts/ ./scripts/
+RUN uv sync --frozen
 # Inject built webapp into FastAPI static directory
 COPY --from=webapp-build /webapp/dist ./yukti/api/static/
 EXPOSE 8000

@@ -1,0 +1,85 @@
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - yukti
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/yukti.conf:/etc/nginx/conf.d/default.conf:ro
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: timescale/timescaledb-ha:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yukti
+      POSTGRES_PASSWORD: yukti_local_password
+      POSTGRES_DB: yukti
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/init-pgvector.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  yukti:
+    image: yukti:latest
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - postgres
+    env_file:
+      - .env.deploy
+    command: ["uv", "run", "uvicorn", "yukti.api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_ADDR: redis://redis:6379
+
+  postgres_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    env_file:
+      - .env.monitoring
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    depends_on:
+      - yukti
+      - redis_exporter
+      - postgres_exporter
+    volumes:
+      - ./deploy/prometheus.full.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    env_file:
+      - .env.monitoring
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
