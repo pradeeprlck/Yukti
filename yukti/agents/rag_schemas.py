@@ -51,4 +51,3 @@ class RagSettings(BaseModel):
     recency_half_life_days: int = 365
     max_fetch_candidates: int = 50
     diversity_lambda: float = 0.7
-*** End Patch

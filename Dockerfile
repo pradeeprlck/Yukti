@@ -25,4 +25,4 @@ RUN uv sync --frozen
 COPY --from=webapp-build /webapp/dist ./yukti/api/static/
 EXPOSE 8000
 ENV MODE=paper
-CMD ["uv", "run", "python", "-m", "yukti", "--mode", "paper"]
+CMD ["uv", "run", "python", "-m", "yukti"]

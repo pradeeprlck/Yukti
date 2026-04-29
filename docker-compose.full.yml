@@ -38,7 +38,7 @@ services:
       - postgres
     env_file:
       - .env.deploy
-    command: ["uv", "run", "uvicorn", "yukti.api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uv", "run", "python", "-m", "yukti"]
 
   redis_exporter:
     image: oliver006/redis_exporter:latest

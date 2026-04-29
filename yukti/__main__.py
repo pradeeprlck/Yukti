@@ -86,20 +86,16 @@ async def _run_paper_or_live(mode: str) -> None:
     # Market scan service
     scanner = MarketScanService(universe)
 
-    if mode == "paper":
-        # Single scan for paper mode
-        await scanner.run_single_scan()
-    else:
-        # Continuous scan for live/shadow
-        global _control_plane
-        scan_task = asyncio.create_task(scanner.run_continuous_scan())
+    # Persistent agent runtime for paper/live/shadow.
+    global _control_plane
+    scan_task = asyncio.create_task(scanner.run_continuous_scan())
 
-        # Control plane
-        _control_plane = ControlPlaneService(mode)
-        await _control_plane.start()
+    # Control plane
+    _control_plane = ControlPlaneService(mode)
+    await _control_plane.start()
 
-        # Wait for scan to finish (it runs forever)
-        await scan_task
+    # Wait for scan to finish (it runs forever)
+    await scan_task
 
 
 async def _run_backtest(start: str, end: str, sample_rate: float) -> None:
