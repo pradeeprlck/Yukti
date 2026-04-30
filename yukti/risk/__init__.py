@@ -225,9 +225,11 @@ async def run_gates(
         trade_decision.conviction,
         portfolio.account_value,
     )
-    max_capital_pct = Decimal(str(settings.max_per_trade_risk_pct)) * Decimal("100")
-    if position.capital_pct > max_capital_pct:
-        return GateResult(False, f"position_size_too_large: {position.capital_pct:.2f}% > {max_capital_pct:.2f}%")
+    account_value = Decimal(str(portfolio.account_value))
+    max_loss_cap_pct = Decimal(str(settings.max_loss_cap_pct)) * Decimal("100")
+    max_loss_pct = (position.max_loss / account_value * Decimal("100")) if account_value > 0 else Decimal("0")
+    if max_loss_pct > max_loss_cap_pct:
+        return GateResult(False, f"max_loss_too_large: {max_loss_pct:.2f}% > {max_loss_cap_pct:.2f}%")
 
     # 7. No market halt / circuit breaker conditions
     if await is_market_halted():
